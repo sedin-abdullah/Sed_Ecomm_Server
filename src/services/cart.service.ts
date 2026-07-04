@@ -93,7 +93,16 @@ async function computeTotals(cart: ICart): Promise<CartTotals> {
 }
 
 async function populateCart(cart: ICart): Promise<ICart> {
-  return cart.populate('items.product', CART_ITEM_POPULATE);
+  const populated = await cart.populate('items.product', CART_ITEM_POPULATE);
+  // Prune items whose referenced product has been deleted from the catalog.
+  // Without this, `populate` returns `product: null` for dead refs and the
+  // frontend crashes when it tries to read fields off the null product.
+  const validItems = populated.items.filter((item) => item.product != null);
+  if (validItems.length !== populated.items.length) {
+    populated.items = validItems as typeof populated.items;
+    await populated.save();
+  }
+  return populated;
 }
 
 export async function getCart(userId: string): Promise<{ cart: ICart; totals: CartTotals }> {
