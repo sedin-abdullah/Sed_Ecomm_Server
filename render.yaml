@@ -1,0 +1,32 @@
+# Render blueprint for the Sed_Ecomm backend (free web service).
+# In Render: New → Blueprint → connect this repo. It reads this file.
+# Secret env vars (marked sync:false) must be filled in the Render dashboard.
+services:
+  - type: web
+    name: sed-ecomm-server
+    runtime: node
+    plan: free
+    # --include=dev ensures TypeScript (a devDependency) is available for the build,
+    # even when NODE_ENV=production would otherwise skip devDependencies.
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_ACCESS_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: CLIENT_URL
+        value: https://sed-ecomm-client.vercel.app
+      # Set this to the deployed URL AFTER first deploy so uploaded image paths
+      # resolve to absolute URLs (e.g. https://sed-ecomm-server.onrender.com).
+      - key: PUBLIC_URL
+        sync: false

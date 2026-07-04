@@ -5,3 +5,7 @@ dist/
 npm-debug.log*
 .DS_Store
 coverage/
+*.tsbuildinfo
+
+# Runtime user uploads (don't commit generated content)
+uploads/
