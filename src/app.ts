@@ -35,7 +35,7 @@ const apiLimiter = rateLimit({
   // A browsing session (product listing + images + suggestions + cart) can
   // easily fire 100+ requests in normal use, let alone active development
   // testing — keep the production ceiling but give dev/test far more room.
-  max: isProduction ? 100 : 5000,
+  max: isProduction ? 1000 : 5000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests, please try again later.' },
