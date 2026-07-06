@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "seed": "ts-node src/seeders/seed.ts",
+    "fix-images": "ts-node src/seeders/fixProductImages.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
