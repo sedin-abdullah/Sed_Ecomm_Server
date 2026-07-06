@@ -13,6 +13,11 @@ import routes from './routes';
 
 const app: Application = express();
 
+// Render (and most PaaS) put the app behind a reverse proxy. Without this,
+// express-rate-limit can't see the real client IP and buckets EVERY request
+// under the proxy's single IP — i.e. all users/tests share one global limit.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(
   cors({
@@ -32,10 +37,11 @@ if (!isProduction) {
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  // A browsing session (product listing + images + suggestions + cart) can
-  // easily fire 100+ requests in normal use, let alone active development
-  // testing — keep the production ceiling but give dev/test far more room.
-  max: isProduction ? 100 : 5000,
+  // Now keyed per client IP (see `trust proxy` above). A browsing session or an
+  // automated test run can legitimately fire hundreds of requests, so keep the
+  // ceiling high — enough to never throttle real usage or e2e/automation suites
+  // while still capping abusive floods. Override with RATE_LIMIT_MAX if needed.
+  max: Number(process.env.RATE_LIMIT_MAX) || (isProduction ? 5000 : 100000),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests, please try again later.' },
