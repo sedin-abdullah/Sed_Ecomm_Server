@@ -6,7 +6,10 @@
  * this only updates the `images` array of existing products, so orders,
  * carts, wishlists and product IDs are all preserved.
  *
- * Run against the target DB:  MONGODB_URI=<uri> npm run fix-images
+ * Two ways to run it:
+ *  - CLI:      MONGODB_URI=<uri> npm run fix-images
+ *  - On boot:  set env RUN_IMAGE_FIX=1 (server.ts calls fixProductImages()
+ *              once after connecting) — useful on hosts without shell access.
  */
 import mongoose from 'mongoose';
 import { connectDB } from '../config/db';
@@ -30,8 +33,8 @@ function nounFromName(name: string): string {
   return name.split(' ').slice(1).join(' ').trim();
 }
 
-async function run() {
-  await connectDB();
+/** Rewrites images for all products. Assumes a live mongoose connection. */
+export async function fixProductImages(): Promise<{ updated: number; skipped: string[] }> {
   const products = await Product.find();
   let updated = 0;
   const skipped: string[] = [];
@@ -49,12 +52,19 @@ async function run() {
     updated += 1;
   }
 
-  console.log(`\n✅ Product images fixed: ${updated} updated, ${skipped.length} skipped.`);
-  if (skipped.length) console.log('   Skipped (no matching noun pool):', skipped.join(', '));
-  await mongoose.disconnect();
+  return { updated, skipped };
 }
 
-run().catch((err) => {
-  console.error('fix-images failed:', err);
-  process.exit(1);
-});
+// CLI entry point: `npm run fix-images`
+if (require.main === module) {
+  (async () => {
+    await connectDB();
+    const { updated, skipped } = await fixProductImages();
+    console.log(`\n✅ Product images fixed: ${updated} updated, ${skipped.length} skipped.`);
+    if (skipped.length) console.log('   Skipped (no matching noun pool):', skipped.join(', '));
+    await mongoose.disconnect();
+  })().catch((err) => {
+    console.error('fix-images failed:', err);
+    process.exit(1);
+  });
+}
