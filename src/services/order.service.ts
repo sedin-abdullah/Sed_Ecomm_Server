@@ -281,7 +281,12 @@ export async function listOrdersAdmin(query: ListOrdersQuery) {
   if (query.status) filter.status = query.status;
 
   const [orders, total] = await Promise.all([
-    Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('user', 'name email'),
+    Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('user', 'name email')
+      .populate('shippingAddress'),
     Order.countDocuments(filter),
   ]);
 
