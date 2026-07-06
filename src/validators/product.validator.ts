@@ -22,7 +22,10 @@ function toArray(val: unknown): string[] | undefined {
 }
 
 const stringArray = z.preprocess(toArray, z.array(z.string()).optional());
-const boolish = z.preprocess((v) => (typeof v === 'string' ? v === 'true' : v), z.boolean().optional());
+const boolish = z.preprocess(
+  (v) => (typeof v === 'string' ? v === 'true' || v === '1' : v),
+  z.boolean().optional(),
+);
 
 export const createProductSchema = z.object({
   name: z.string({ required_error: 'Product name is required' }).trim().min(2).max(200),

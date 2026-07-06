@@ -1,0 +1,23 @@
+name: Keep backend warm
+
+# Render's free tier spins the service down after ~15 min idle, and the next
+# request 502s for ~50s while it cold-starts — which makes the storefront look
+# empty. Pinging /health every ~10 min keeps it awake.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -m 60 https://sed-ecomm-server.onrender.com/api/v1/health || true)
+            echo "attempt $i -> HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 20
+          done
+          echo "backend did not return 200 after retries (may still be waking)"
