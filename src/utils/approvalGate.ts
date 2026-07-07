@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { enqueue } from '../services/approval.service';
+import { logActivity, snapshotBefore } from '../services/approval.service';
 import { sendResponse } from './sendResponse';
 import { ChangeAction, ChangeModule } from '../models/ChangeRequest';
 
@@ -9,14 +9,15 @@ interface GateMeta {
   targetId?: string;
   targetLabel?: string;
   payload?: unknown;
-  appliedStatus?: number; // HTTP status when a manager applies directly
-  appliedMessage: string; // success message when applied directly
+  appliedStatus?: number;
+  appliedMessage: string;
 }
 
 /**
- * Approval gate. A **manager** is the authority, so their action applies
- * immediately (`applyNow`). An **admin's** action is enqueued as a pending
- * ChangeRequest and nothing goes live until the manager approves it.
+ * Monitor-only model: the action is applied IMMEDIATELY (so customers see it
+ * right away), then recorded in the activity log so a Manager can review who
+ * did what — for fraud detection — after the fact. Applies to admins and
+ * managers alike (both are logged; managers can filter to admins).
  */
 export async function gate(
   req: Pick<Request, 'user'>,
@@ -24,18 +25,28 @@ export async function gate(
   meta: GateMeta,
   applyNow: () => Promise<unknown>,
 ): Promise<void> {
-  if (req.user?.role === 'manager') {
-    const result = await applyNow();
-    sendResponse(res, meta.appliedStatus ?? 200, { data: result, message: meta.appliedMessage });
-    return;
+  // Snapshot the prior state BEFORE applying so the log has an old→new diff.
+  const before = meta.action === 'create' ? undefined : await snapshotBefore(meta.module, meta.targetId);
+
+  const result = await applyNow();
+
+  // Best-effort logging — a logging failure must never break the operation.
+  try {
+    if (req.user) {
+      await logActivity({
+        actor: req.user,
+        module: meta.module,
+        action: meta.action,
+        targetId: meta.targetId,
+        targetLabel: meta.targetLabel,
+        payload: meta.payload,
+        before,
+        result,
+      });
+    }
+  } catch {
+    // swallow — the change already applied successfully
   }
-  const cr = await enqueue({
-    actor: req.user!,
-    module: meta.module,
-    action: meta.action,
-    targetId: meta.targetId,
-    targetLabel: meta.targetLabel,
-    payload: meta.payload,
-  });
-  sendResponse(res, 202, { data: cr, message: 'Submitted for manager approval — pending review.' });
+
+  sendResponse(res, meta.appliedStatus ?? 200, { data: result, message: meta.appliedMessage });
 }

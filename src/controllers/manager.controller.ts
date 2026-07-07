@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import * as managerService from '../services/manager.service';
 import * as approvalService from '../services/approval.service';
-import { ChangeStatus } from '../models/ChangeRequest';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendResponse } from '../utils/sendResponse';
 
@@ -23,21 +22,11 @@ export const setAdminStatus = asyncHandler(async (req: Request<{ id: string }>, 
   sendResponse(res, 200, { data: admin, message: isActive ? 'Admin enabled' : 'Admin disabled' });
 });
 
-// ---- Approval workflow (change requests / audit trail) ----
+// ---- Activity log (fraud monitoring) ----
 
-export const listChangeRequests = asyncHandler(async (req: Request, res: Response) => {
-  const status = req.query.status as ChangeStatus | undefined;
-  const items = await approvalService.listChangeRequests(status);
+export const listActivity = asyncHandler(async (req: Request, res: Response) => {
+  // Optional ?role=admin to focus fraud review on admin actions only.
+  const role = typeof req.query.role === 'string' ? req.query.role : undefined;
+  const items = await approvalService.listActivity(role);
   sendResponse(res, 200, { data: items });
-});
-
-export const approveChange = asyncHandler(async (req: Request<{ id: string }>, res: Response) => {
-  const cr = await approvalService.approveChangeRequest(req.params.id, req.user!);
-  sendResponse(res, 200, { data: cr, message: 'Change approved and applied' });
-});
-
-export const rejectChange = asyncHandler(async (req: Request<{ id: string }>, res: Response) => {
-  const { note } = req.body as { note?: string };
-  const cr = await approvalService.rejectChangeRequest(req.params.id, req.user!, note);
-  sendResponse(res, 200, { data: cr, message: 'Change rejected' });
 });
