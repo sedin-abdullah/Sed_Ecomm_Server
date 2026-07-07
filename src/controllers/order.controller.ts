@@ -3,6 +3,7 @@ import * as orderService from '../services/order.service';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendResponse } from '../utils/sendResponse';
+import { gate } from '../utils/approvalGate';
 import { CreateOrderInput, ListOrdersQuery, UpdateOrderStatusInput } from '../validators/order.validator';
 
 function requireUserId(req: Pick<Request, 'user'>): string {
@@ -60,7 +61,18 @@ export const listAllOrders = asyncHandler(
 
 export const updateStatus = asyncHandler(
   async (req: Request<{ id: string }, unknown, UpdateOrderStatusInput>, res: Response) => {
-    const order = await orderService.updateOrderStatusAdmin(req.params.id, req.body.status, req.body.note);
-    sendResponse(res, 200, { data: order, message: 'Order status updated' });
+    await gate(
+      req,
+      res,
+      {
+        module: 'order',
+        action: 'status',
+        targetId: req.params.id,
+        targetLabel: `#${req.params.id.slice(-8).toUpperCase()}`,
+        payload: { status: req.body.status, note: req.body.note },
+        appliedMessage: 'Order status updated',
+      },
+      () => orderService.updateOrderStatusAdmin(req.params.id, req.body.status, req.body.note),
+    );
   },
 );

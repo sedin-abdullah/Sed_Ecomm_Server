@@ -14,4 +14,9 @@ router.post('/admins', validate(createAdminSchema), managerController.createAdmi
 router.get('/admins', managerController.listAdmins);
 router.patch('/admins/:id/status', validate(setAdminStatusSchema), managerController.setAdminStatus);
 
+// Approval workflow
+router.get('/change-requests', managerController.listChangeRequests);
+router.post('/change-requests/:id/approve', managerController.approveChange);
+router.post('/change-requests/:id/reject', managerController.rejectChange);
+
 export default router;
