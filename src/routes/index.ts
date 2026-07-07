@@ -4,6 +4,7 @@ import authRoutes from './auth.routes';
 import cartRoutes from './cart.routes';
 import categoryRoutes from './category.routes';
 import couponRoutes from './coupon.routes';
+import managerRoutes from './manager.routes';
 import metaRoutes from './meta.routes';
 import orderRoutes from './order.routes';
 import paymentRoutes from './payment.routes';
@@ -29,6 +30,7 @@ router.use('/coupons', couponRoutes);
 router.use('/orders', orderRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/admin', adminRoutes);
+router.use('/manager', managerRoutes);
 router.use('/meta', metaRoutes);
 
 export default router;
