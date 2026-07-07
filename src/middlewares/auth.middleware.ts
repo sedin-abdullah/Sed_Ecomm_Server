@@ -40,10 +40,15 @@ export const protect = asyncHandler(async (req: Request, _res: Response, next: N
 /**
  * Restricts access to users whose role is included in `roles`. Must be
  * used after `protect` so that `req.user` is populated.
+ *
+ * Role hierarchy: `manager` is a superset of `admin`, so a manager passes any
+ * route that allows `admin` (no need to list 'manager' on every admin route).
  */
 export function restrictTo(...roles: UserRole[]) {
+  const allowed = new Set(roles);
+  if (allowed.has('admin')) allowed.add('manager');
   return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!req.user || !allowed.has(req.user.role)) {
       next(new AppError('You do not have permission to perform this action', 403));
       return;
     }

@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "seed": "ts-node src/seeders/seed.ts",
     "fix-images": "ts-node src/seeders/fixProductImages.ts",
+    "ensure-manager": "ts-node src/seeders/ensureManager.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
