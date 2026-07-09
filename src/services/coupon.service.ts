@@ -13,6 +13,24 @@ function endOfDay(date: Date): Date {
   return d;
 }
 
+/** True when the coupon only applies to specific products (not the whole cart). */
+export function isProductScoped(coupon: Pick<ICoupon, 'applicableProducts'>): boolean {
+  return Array.isArray(coupon.applicableProducts) && coupon.applicableProducts.length > 0;
+}
+
+/**
+ * Subtotal the discount applies to: the whole cart for an unscoped coupon, or
+ * just the line totals of the coupon's applicable products otherwise.
+ */
+export function couponEligibleSubtotal(
+  coupon: Pick<ICoupon, 'applicableProducts'>,
+  items: { productId: string; lineTotal: number }[],
+): number {
+  if (!isProductScoped(coupon)) return items.reduce((s, i) => s + i.lineTotal, 0);
+  const allowed = new Set(coupon.applicableProducts.map((id) => String(id)));
+  return items.filter((i) => allowed.has(i.productId)).reduce((s, i) => s + i.lineTotal, 0);
+}
+
 export interface CouponPreview {
   code: string;
   type: ICoupon['type'];
@@ -73,6 +91,7 @@ export async function createCoupon(input: CreateCouponInput): Promise<ICoupon> {
     expiresAt: endOfDay(input.expiresAt),
     usageLimit: input.usageLimit,
     isActive: input.isActive,
+    applicableProducts: input.applicableProducts ?? [],
   });
 }
 
@@ -90,6 +109,9 @@ export async function updateCoupon(id: string, input: UpdateCouponInput): Promis
   if (input.expiresAt !== undefined) coupon.expiresAt = endOfDay(input.expiresAt);
   if (input.usageLimit !== undefined) coupon.usageLimit = input.usageLimit;
   if (input.isActive !== undefined) coupon.isActive = input.isActive;
+  if (input.applicableProducts !== undefined) {
+    coupon.applicableProducts = input.applicableProducts as unknown as ICoupon['applicableProducts'];
+  }
 
   await coupon.save();
   return coupon;

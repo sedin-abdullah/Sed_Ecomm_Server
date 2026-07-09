@@ -1,4 +1,7 @@
+import { Types } from 'mongoose';
 import { z } from 'zod';
+
+const objectId = z.string().refine((v) => Types.ObjectId.isValid(v), 'Invalid product id');
 
 export const createCouponSchema = z.object({
   code: z.string({ required_error: 'Coupon code is required' }).trim().min(3).max(30),
@@ -9,6 +12,8 @@ export const createCouponSchema = z.object({
   expiresAt: z.coerce.date({ required_error: 'Expiry date is required' }),
   usageLimit: z.coerce.number().int().min(0).optional(),
   isActive: z.coerce.boolean().optional(),
+  // Optional product scope; empty/omitted = applies to the whole cart.
+  applicableProducts: z.array(objectId).optional(),
 });
 
 export const updateCouponSchema = createCouponSchema.partial();
