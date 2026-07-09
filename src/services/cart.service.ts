@@ -2,7 +2,6 @@ import { Cart, ICart } from '../models/Cart';
 import { Coupon, ICoupon } from '../models/Coupon';
 import { IProduct, Product } from '../models/Product';
 import { AppError } from '../utils/AppError';
-import { couponEligibleSubtotal, isProductScoped } from './coupon.service';
 import { AddCartItemInput, UpdateCartItemInput } from '../validators/cart.validator';
 
 export interface CartTotals {
@@ -34,29 +33,23 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** Line totals of the currently-active (not saved-for-later) cart items. */
-function activeLineItems(cart: ICart): { productId: string; lineTotal: number }[] {
-  return cart.items
-    .filter((item) => !item.savedForLater)
-    .map((item) => {
-      const product = item.product as unknown as IProduct;
-      const price = product?.discountPrice ?? product?.price ?? 0;
-      return { productId: String(product?._id ?? item.product), lineTotal: price * item.qty };
-    });
+/** Total quantity of the currently-active (not saved-for-later) cart items. */
+function activeItemCount(cart: ICart): number {
+  return cart.items.filter((item) => !item.savedForLater).reduce((sum, item) => sum + item.qty, 0);
 }
 
-/** Discount is applied to the eligible subtotal (whole cart, or scoped items). */
-function computeDiscount(coupon: ICoupon, eligibleSubtotal: number): number {
-  let discount = coupon.type === 'flat' ? coupon.value : (eligibleSubtotal * coupon.value) / 100;
+/** Discount always applies to the whole cart value (value-based coupons). */
+function computeDiscount(coupon: ICoupon, subtotal: number): number {
+  let discount = coupon.type === 'flat' ? coupon.value : (subtotal * coupon.value) / 100;
   if (coupon.maxDiscount !== undefined) discount = Math.min(discount, coupon.maxDiscount);
-  return round2(Math.min(discount, eligibleSubtotal));
+  return round2(Math.min(discount, subtotal));
 }
 
 /** Validates a coupon is currently usable; throws AppError describing why not. */
 export function assertCouponUsable(
   coupon: ICoupon | null,
   subtotal: number,
-  eligibleSubtotal: number,
+  itemCount: number,
 ): asserts coupon is ICoupon {
   if (!coupon) {
     throw new AppError('Invalid coupon code', 404);
@@ -73,8 +66,8 @@ export function assertCouponUsable(
   if (subtotal < coupon.minOrderValue) {
     throw new AppError(`A minimum order value of ${coupon.minOrderValue} is required for this coupon`, 400);
   }
-  if (isProductScoped(coupon) && eligibleSubtotal <= 0) {
-    throw new AppError('This coupon only applies to specific products that are not in your cart', 400);
+  if ((coupon.minItems ?? 0) > 0 && itemCount < coupon.minItems) {
+    throw new AppError(`This coupon requires at least ${coupon.minItems} items in your cart`, 400);
   }
 }
 
@@ -94,9 +87,8 @@ async function computeTotals(cart: ICart): Promise<CartTotals> {
   if (cart.couponCode) {
     const coupon = await Coupon.findOne({ code: cart.couponCode });
     try {
-      const eligible = coupon ? couponEligibleSubtotal(coupon, activeLineItems(cart)) : 0;
-      assertCouponUsable(coupon, subtotal, eligible);
-      discount = computeDiscount(coupon as ICoupon, eligible);
+      assertCouponUsable(coupon, subtotal, activeItemCount(cart));
+      discount = computeDiscount(coupon as ICoupon, subtotal);
       couponCode = cart.couponCode;
     } catch {
       // Coupon is no longer valid (expired/deactivated/subtotal dropped below minimum) — silently drop it.
@@ -201,8 +193,7 @@ export async function applyCoupon(userId: string, code: string) {
   const { subtotal } = await computeTotals(populated);
 
   const coupon = await Coupon.findOne({ code: code.trim().toUpperCase() });
-  const eligible = coupon ? couponEligibleSubtotal(coupon, activeLineItems(populated)) : 0;
-  assertCouponUsable(coupon, subtotal, eligible);
+  assertCouponUsable(coupon, subtotal, activeItemCount(populated));
 
   cart.couponCode = coupon.code;
   await cart.save();

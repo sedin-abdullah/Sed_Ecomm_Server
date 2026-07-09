@@ -1,7 +1,6 @@
 import { Address } from '../models/Address';
 import { Cart } from '../models/Cart';
 import { Coupon, ICoupon } from '../models/Coupon';
-import { couponEligibleSubtotal, isProductScoped } from './coupon.service';
 import { IOrder, IOrderItem, ITrackingEvent, Order, OrderStatus } from '../models/Order';
 import { IProduct, Product } from '../models/Product';
 import { AppError } from '../utils/AppError';
@@ -30,13 +29,13 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function computeCouponDiscount(coupon: ICoupon, eligibleSubtotal: number): number {
-  let discount = coupon.type === 'flat' ? coupon.value : (eligibleSubtotal * coupon.value) / 100;
+function computeCouponDiscount(coupon: ICoupon, subtotal: number): number {
+  let discount = coupon.type === 'flat' ? coupon.value : (subtotal * coupon.value) / 100;
   if (coupon.maxDiscount !== undefined) discount = Math.min(discount, coupon.maxDiscount);
-  return round2(Math.min(discount, eligibleSubtotal));
+  return round2(Math.min(discount, subtotal));
 }
 
-async function resolveCoupon(code: string, subtotal: number, eligibleSubtotal: number): Promise<ICoupon> {
+async function resolveCoupon(code: string, subtotal: number, itemCount: number): Promise<ICoupon> {
   const coupon = await Coupon.findOne({ code: code.trim().toUpperCase() });
   if (!coupon) throw new AppError('Invalid coupon code', 400);
   if (!coupon.isActive) throw new AppError('This coupon is no longer active', 400);
@@ -45,8 +44,8 @@ async function resolveCoupon(code: string, subtotal: number, eligibleSubtotal: n
   if (subtotal < coupon.minOrderValue) {
     throw new AppError(`A minimum order value of ${coupon.minOrderValue} is required for this coupon`, 400);
   }
-  if (isProductScoped(coupon) && eligibleSubtotal <= 0) {
-    throw new AppError('This coupon only applies to specific products that are not in your order', 400);
+  if ((coupon.minItems ?? 0) > 0 && itemCount < coupon.minItems) {
+    throw new AppError(`This coupon requires at least ${coupon.minItems} items in your order`, 400);
   }
   return coupon;
 }
@@ -113,11 +112,9 @@ export async function createOrder(userId: string, input: CreateOrderInput): Prom
   let coupon: ICoupon | undefined;
   const couponCode = input.couponCode ?? (await Cart.findOne({ user: userId }))?.couponCode;
   if (couponCode) {
-    const lineItems = orderItems.map((it) => ({ productId: String(it.product), lineTotal: it.price * it.qty }));
-    const preCoupon = await Coupon.findOne({ code: couponCode.trim().toUpperCase() });
-    const eligible = preCoupon ? couponEligibleSubtotal(preCoupon, lineItems) : subtotal;
-    coupon = await resolveCoupon(couponCode, subtotal, eligible);
-    discount = computeCouponDiscount(coupon, eligible);
+    const itemCount = orderItems.reduce((sum, it) => sum + it.qty, 0);
+    coupon = await resolveCoupon(couponCode, subtotal, itemCount);
+    discount = computeCouponDiscount(coupon, subtotal);
   }
 
   const shippingFee = subtotal - discount >= FREE_SHIPPING_THRESHOLD ? 0 : FLAT_SHIPPING_FEE;

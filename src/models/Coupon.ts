@@ -1,4 +1,4 @@
-import { Document, Model, Schema, Types, model } from 'mongoose';
+import { Document, Model, Schema, model } from 'mongoose';
 
 export type CouponType = 'percentage' | 'flat';
 
@@ -12,9 +12,10 @@ export interface ICoupon extends Document {
   usageLimit: number;
   usedCount: number;
   isActive: boolean;
-  // Empty = applies to the whole cart. Otherwise the discount only applies to
-  // these products (and the coupon is invalid if none are in the cart).
-  applicableProducts: Types.ObjectId[];
+  // Value/count-based eligibility: the cart must contain at least this many
+  // items (total quantity) for the coupon to apply. 0 = no minimum. The
+  // discount always applies to the whole cart value, not specific products.
+  minItems: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -65,9 +66,10 @@ const couponSchema = new Schema<ICoupon>(
       type: Boolean,
       default: true,
     },
-    applicableProducts: {
-      type: [{ type: Schema.Types.ObjectId, ref: 'Product' }],
-      default: [],
+    minItems: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
   },
   { timestamps: true, toJSON: { virtuals: true } },
