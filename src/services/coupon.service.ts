@@ -2,6 +2,17 @@ import { Coupon, ICoupon } from '../models/Coupon';
 import { AppError } from '../utils/AppError';
 import { CreateCouponInput, UpdateCouponInput } from '../validators/coupon.validator';
 
+/**
+ * A date-only expiry (e.g. "2026-07-09") arrives as midnight UTC, which would
+ * make the coupon expire at the START of that day. Push it to end-of-day so an
+ * "expires on the 9th" coupon is usable through the whole 9th.
+ */
+function endOfDay(date: Date): Date {
+  const d = new Date(date);
+  d.setUTCHours(23, 59, 59, 999);
+  return d;
+}
+
 export interface CouponPreview {
   code: string;
   type: ICoupon['type'];
@@ -59,7 +70,7 @@ export async function createCoupon(input: CreateCouponInput): Promise<ICoupon> {
     value: input.value,
     minOrderValue: input.minOrderValue,
     maxDiscount: input.maxDiscount,
-    expiresAt: input.expiresAt,
+    expiresAt: endOfDay(input.expiresAt),
     usageLimit: input.usageLimit,
     isActive: input.isActive,
   });
@@ -76,7 +87,7 @@ export async function updateCoupon(id: string, input: UpdateCouponInput): Promis
   if (input.value !== undefined) coupon.value = input.value;
   if (input.minOrderValue !== undefined) coupon.minOrderValue = input.minOrderValue;
   if (input.maxDiscount !== undefined) coupon.maxDiscount = input.maxDiscount;
-  if (input.expiresAt !== undefined) coupon.expiresAt = input.expiresAt;
+  if (input.expiresAt !== undefined) coupon.expiresAt = endOfDay(input.expiresAt);
   if (input.usageLimit !== undefined) coupon.usageLimit = input.usageLimit;
   if (input.isActive !== undefined) coupon.isActive = input.isActive;
 
