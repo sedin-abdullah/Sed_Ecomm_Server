@@ -2,7 +2,7 @@ import { Router } from 'express';
 import * as orderController from '../controllers/order.controller';
 import { protect } from '../middlewares/auth.middleware';
 import { validate } from '../middlewares/validate';
-import { createOrderSchema, listOrdersQuerySchema } from '../validators/order.validator';
+import { createOrderSchema, listOrdersQuerySchema, requestRefundSchema } from '../validators/order.validator';
 
 const router = Router();
 
@@ -13,6 +13,7 @@ router.get('/', validate(listOrdersQuerySchema, 'query'), orderController.myOrde
 router.get('/:id', orderController.getById);
 router.post('/:id/cancel', orderController.cancel);
 router.post('/:id/return', orderController.returnOrder);
+router.post('/:id/refund', validate(requestRefundSchema), orderController.requestRefund);
 router.get('/:id/invoice', orderController.invoice);
 router.get('/:id/track', orderController.track);
 

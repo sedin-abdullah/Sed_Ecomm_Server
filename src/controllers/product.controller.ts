@@ -62,6 +62,14 @@ export const update = asyncHandler(
     const payload = uploaded.length
       ? { ...req.body, images: [...(req.body.images ?? []), ...uploaded] }
       : { ...req.body };
+
+    // Pricing is restricted: only Manager and Super Admin may change prices.
+    // Store Owners ('admin') keep full product management minus price fields —
+    // strip them server-side so the restriction can't be bypassed via the API.
+    if (req.user?.role === 'admin') {
+      delete payload.price;
+      delete payload.discountPrice;
+    }
     await gate(
       req,
       res,

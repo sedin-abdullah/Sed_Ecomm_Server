@@ -34,10 +34,22 @@ function computeChanges(before: unknown, payload: unknown): FieldChange[] {
 }
 
 /** One-line, human-readable description of what the actor did. */
-function summarize(module: ChangeModule, action: ChangeAction, label: string, changes: FieldChange[]): string {
+function summarize(
+  module: ChangeModule,
+  action: ChangeAction,
+  label: string,
+  changes: FieldChange[],
+  payload?: unknown,
+): string {
   const name = label || module;
   if (action === 'create') return `Created ${module} “${name}”`;
   if (action === 'delete') return `Deleted ${module} “${name}”`;
+  if (action === 'refund') {
+    const p = (payload ?? {}) as { refundMethod?: string; reason?: string };
+    return p.refundMethod
+      ? `Processed refund (${p.refundMethod}) for order ${name}`
+      : `Requested refund for order ${name}${p.reason ? ` — ${p.reason}` : ''}`;
+  }
   if (action === 'status') {
     const s = changes.find((c) => c.field === 'status');
     return `Changed ${module} ${name} status to “${String(s?.to ?? '')}”`;
@@ -75,7 +87,7 @@ export async function logActivity(params: LogParams): Promise<IChangeRequest> {
     action: params.action,
     targetId,
     targetLabel: label,
-    summary: summarize(params.module, params.action, label, changes),
+    summary: summarize(params.module, params.action, label, changes, params.payload),
     changes,
     payload: params.payload,
     before: params.before,

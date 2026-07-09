@@ -1,8 +1,10 @@
 import { Address } from '../models/Address';
 import { Cart } from '../models/Cart';
 import { Coupon, ICoupon } from '../models/Coupon';
-import { IOrder, IOrderItem, ITrackingEvent, Order, OrderStatus } from '../models/Order';
+import { IOrder, IOrderItem, ITrackingEvent, Order, OrderStatus, RefundMethod } from '../models/Order';
+import { Payment } from '../models/Payment';
 import { IProduct, Product } from '../models/Product';
+import { IUser } from '../models/User';
 import { AppError } from '../utils/AppError';
 import { buildPaginationMeta, parsePagination } from '../utils/pagination';
 import { CreateOrderInput, ListOrdersQuery } from '../validators/order.validator';
@@ -180,7 +182,7 @@ export async function getOrderById(userId: string, id: string): Promise<IOrder> 
   return findOrderOrThrow(id, userId);
 }
 
-export async function cancelOrder(userId: string, id: string): Promise<IOrder> {
+export async function cancelOrder(userId: string, id: string, reason?: string): Promise<IOrder> {
   const order = await findOrderOrThrow(id, userId);
 
   if (!['pending', 'confirmed'].includes(order.status)) {
@@ -192,6 +194,8 @@ export async function cancelOrder(userId: string, id: string): Promise<IOrder> {
   );
 
   order.status = 'cancelled';
+  order.cancelledBy = (order.user as unknown as { name?: string })?.name ?? 'Customer';
+  if (reason) order.cancellationReason = reason;
   order.trackingTimeline.push({ status: 'cancelled', timestamp: new Date(), note: STAGE_NOTES.cancelled });
   await order.save();
   return order;
@@ -299,7 +303,12 @@ export async function listOrdersAdmin(query: ListOrdersQuery) {
 
 const RESTOCKED_STATUSES: OrderStatus[] = ['cancelled', 'returned'];
 
-export async function updateOrderStatusAdmin(id: string, status: OrderStatus, note?: string): Promise<IOrder> {
+export async function updateOrderStatusAdmin(
+  id: string,
+  status: OrderStatus,
+  note?: string,
+  actorName?: string,
+): Promise<IOrder> {
   const order = await Order.findById(id);
   if (!order) {
     throw new AppError('Order not found', 404);
@@ -316,10 +325,84 @@ export async function updateOrderStatusAdmin(id: string, status: OrderStatus, no
     );
   }
 
+  // Attribute staff cancellations so the Cancelled tab shows who cancelled.
+  if (status === 'cancelled' && !order.cancelledBy) {
+    order.cancelledBy = actorName ?? 'Staff';
+    if (note) order.cancellationReason = note;
+  }
+
   if (status === 'delivered' && order.paymentMethod === 'cod') {
     order.paymentStatus = 'success';
   }
 
+  await order.save();
+  return order;
+}
+
+// ---- Refund workflow ----
+
+const REFUND_MESSAGES: Record<RefundMethod, string> = {
+  card: 'Your refund has been processed successfully and will be credited to your card shortly.',
+  upi: 'Your refund has been processed successfully and has been initiated to your UPI account.',
+  cash: 'Your refund has been approved. Please collect the refund from the store.',
+};
+
+/** Customer: request a refund on a delivered order (from My Orders). */
+export async function requestRefund(
+  userId: string,
+  id: string,
+  reason: string,
+  comments?: string,
+): Promise<IOrder> {
+  const order = await findOrderOrThrow(id, userId);
+
+  if (order.status !== 'delivered') {
+    throw new AppError('Refunds can only be requested after the order is delivered', 409);
+  }
+  if (order.refund) {
+    throw new AppError('A refund has already been requested for this order', 409);
+  }
+
+  order.refund = { status: 'requested', reason, comments, requestedAt: new Date() };
+  await order.save();
+  return order;
+}
+
+/** Staff: all orders with a refund request, newest first, incl. payment info. */
+export async function listRefundOrders() {
+  const orders = await Order.find({ 'refund.requestedAt': { $exists: true } })
+    .sort({ 'refund.requestedAt': -1 })
+    .populate('user', 'name email phone')
+    .populate('shippingAddress');
+
+  // Attach the payment record (transaction id / status) per order.
+  const payments = await Payment.find({ order: { $in: orders.map((o) => o._id) } });
+  const byOrder = new Map(payments.map((p) => [String(p.order), p]));
+  return orders.map((o) => {
+    const json = o.toJSON() as Record<string, unknown>;
+    const payment = byOrder.get(String(o._id));
+    json.payment = payment
+      ? { id: String(payment._id), method: payment.method, status: payment.status, amount: payment.amount }
+      : undefined;
+    return json;
+  });
+}
+
+/** Staff: process a requested refund with the chosen method (card/upi/cash). */
+export async function processRefund(id: string, method: RefundMethod, staff: IUser): Promise<IOrder> {
+  const order = await Order.findById(id);
+  if (!order) throw new AppError('Order not found', 404);
+  if (!order.refund || order.refund.status !== 'requested') {
+    throw new AppError('This order has no pending refund request', 409);
+  }
+
+  order.refund.status = 'processed';
+  order.refund.method = method;
+  order.refund.processedAt = new Date();
+  order.refund.processedBy = staff.name;
+  order.refund.message = REFUND_MESSAGES[method];
+  order.paymentStatus = 'refunded';
+  order.markModified('refund');
   await order.save();
   return order;
 }

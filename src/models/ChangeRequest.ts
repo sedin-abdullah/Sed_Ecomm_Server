@@ -1,7 +1,7 @@
 import { Document, Model, Schema, Types, model } from 'mongoose';
 
 export type ChangeModule = 'product' | 'category' | 'coupon' | 'order';
-export type ChangeAction = 'create' | 'update' | 'delete' | 'status';
+export type ChangeAction = 'create' | 'update' | 'delete' | 'status' | 'refund';
 // 'applied' = monitor-only activity (took effect immediately). pending/approved/
 // rejected retained for any historical records from the earlier blocking model.
 export type ChangeStatus = 'applied' | 'pending' | 'approved' | 'rejected';
@@ -39,7 +39,7 @@ const changeRequestSchema = new Schema<IChangeRequest>(
     actorName: { type: String, required: true },
     actorRole: { type: String },
     module: { type: String, enum: ['product', 'category', 'coupon', 'order'], required: true },
-    action: { type: String, enum: ['create', 'update', 'delete', 'status'], required: true },
+    action: { type: String, enum: ['create', 'update', 'delete', 'status', 'refund'], required: true },
     targetId: { type: String },
     targetLabel: { type: String },
     summary: { type: String },

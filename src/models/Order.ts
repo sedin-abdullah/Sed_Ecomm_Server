@@ -1,6 +1,19 @@
 import { Document, Model, Schema, Types, model } from 'mongoose';
 
-export type PaymentStatus = 'pending' | 'success' | 'failed';
+export type PaymentStatus = 'pending' | 'success' | 'failed' | 'refunded';
+export type RefundMethod = 'card' | 'upi' | 'cash';
+export type RefundStatus = 'requested' | 'processed';
+
+export interface IRefundInfo {
+  status: RefundStatus;
+  reason: string;
+  comments?: string;
+  requestedAt: Date;
+  method?: RefundMethod;
+  processedAt?: Date;
+  processedBy?: string; // staff name snapshot for the audit trail
+  message?: string; // customer-facing status message
+}
 export type OrderStatus =
   | 'pending'
   | 'confirmed'
@@ -44,6 +57,9 @@ export interface IOrder extends Document {
   paymentStatus: PaymentStatus;
   status: OrderStatus;
   trackingTimeline: ITrackingEvent[];
+  refund?: IRefundInfo;
+  cancelledBy?: string; // who cancelled (customer or staff name snapshot)
+  cancellationReason?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,7 +139,7 @@ const orderSchema = new Schema<IOrder>(
     },
     paymentStatus: {
       type: String,
-      enum: ['pending', 'success', 'failed'],
+      enum: ['pending', 'success', 'failed', 'refunded'],
       default: 'pending',
     },
     status: {
@@ -144,6 +160,24 @@ const orderSchema = new Schema<IOrder>(
       type: [trackingEventSchema],
       default: [],
     },
+    refund: {
+      type: new Schema<IRefundInfo>(
+        {
+          status: { type: String, enum: ['requested', 'processed'], required: true },
+          reason: { type: String, required: true },
+          comments: { type: String },
+          requestedAt: { type: Date, required: true },
+          method: { type: String, enum: ['card', 'upi', 'cash'] },
+          processedAt: { type: Date },
+          processedBy: { type: String },
+          message: { type: String },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    cancelledBy: { type: String },
+    cancellationReason: { type: String },
   },
   { timestamps: true, toJSON: { virtuals: true } },
 );

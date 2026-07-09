@@ -4,7 +4,14 @@ import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendResponse } from '../utils/sendResponse';
 import { gate } from '../utils/approvalGate';
-import { CreateOrderInput, ListOrdersQuery, UpdateOrderStatusInput } from '../validators/order.validator';
+import { logActivity } from '../services/approval.service';
+import {
+  CreateOrderInput,
+  ListOrdersQuery,
+  ProcessRefundInput,
+  RequestRefundInput,
+  UpdateOrderStatusInput,
+} from '../validators/order.validator';
 
 function requireUserId(req: Pick<Request, 'user'>): string {
   if (!req.user) throw new AppError('Authentication required', 401);
@@ -31,9 +38,37 @@ export const getById = asyncHandler(async (req: Request<{ id: string }>, res: Re
 });
 
 export const cancel = asyncHandler(async (req: Request<{ id: string }>, res: Response) => {
-  const order = await orderService.cancelOrder(requireUserId(req), req.params.id);
+  const reason = typeof (req.body as { reason?: string })?.reason === 'string' ? (req.body as { reason?: string }).reason : undefined;
+  const order = await orderService.cancelOrder(requireUserId(req), req.params.id, reason);
   sendResponse(res, 200, { data: order, message: 'Order cancelled successfully' });
 });
+
+export const requestRefund = asyncHandler(
+  async (req: Request<{ id: string }, unknown, RequestRefundInput>, res: Response) => {
+    const order = await orderService.requestRefund(
+      requireUserId(req),
+      req.params.id,
+      req.body.reason,
+      req.body.comments,
+    );
+    // Record the customer's request in the activity log (best-effort).
+    try {
+      if (req.user) {
+        await logActivity({
+          actor: req.user,
+          module: 'order',
+          action: 'refund',
+          targetId: req.params.id,
+          targetLabel: `#${req.params.id.slice(-8).toUpperCase()}`,
+          payload: { reason: req.body.reason, comments: req.body.comments },
+        });
+      }
+    } catch {
+      // never fail the request because of logging
+    }
+    sendResponse(res, 200, { data: order, message: 'Refund request submitted' });
+  },
+);
 
 export const returnOrder = asyncHandler(async (req: Request<{ id: string }>, res: Response) => {
   const order = await orderService.returnOrder(requireUserId(req), req.params.id);
@@ -72,7 +107,30 @@ export const updateStatus = asyncHandler(
         payload: { status: req.body.status, note: req.body.note },
         appliedMessage: 'Order status updated',
       },
-      () => orderService.updateOrderStatusAdmin(req.params.id, req.body.status, req.body.note),
+      () => orderService.updateOrderStatusAdmin(req.params.id, req.body.status, req.body.note, req.user?.name),
+    );
+  },
+);
+
+export const listRefunds = asyncHandler(async (_req: Request, res: Response) => {
+  const orders = await orderService.listRefundOrders();
+  sendResponse(res, 200, { data: orders });
+});
+
+export const processRefund = asyncHandler(
+  async (req: Request<{ id: string }, unknown, ProcessRefundInput>, res: Response) => {
+    await gate(
+      req,
+      res,
+      {
+        module: 'order',
+        action: 'refund',
+        targetId: req.params.id,
+        targetLabel: `#${req.params.id.slice(-8).toUpperCase()}`,
+        payload: { refundMethod: req.body.method, refundStatus: 'processed' },
+        appliedMessage: 'Refund processed',
+      },
+      () => orderService.processRefund(req.params.id, req.body.method, req.user!),
     );
   },
 );

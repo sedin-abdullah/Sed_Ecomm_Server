@@ -4,7 +4,7 @@ import * as orderController from '../controllers/order.controller';
 import { protect, restrictTo } from '../middlewares/auth.middleware';
 import { validate } from '../middlewares/validate';
 import { setCustomerStatusSchema } from '../validators/admin.validator';
-import { listOrdersQuerySchema, updateOrderStatusSchema } from '../validators/order.validator';
+import { listOrdersQuerySchema, processRefundSchema, updateOrderStatusSchema } from '../validators/order.validator';
 
 const router = Router();
 
@@ -22,6 +22,8 @@ router.patch(
 );
 
 router.get('/orders', validate(listOrdersQuerySchema, 'query'), orderController.listAllOrders);
+router.get('/orders/refunds', orderController.listRefunds);
 router.patch('/orders/:id/status', validate(updateOrderStatusSchema), orderController.updateStatus);
+router.post('/orders/:id/refund', validate(processRefundSchema), orderController.processRefund);
 
 export default router;
