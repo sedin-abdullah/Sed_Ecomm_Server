@@ -44,6 +44,7 @@ export interface IProduct extends Document {
   flashSaleEndsAt?: Date;
   isNewArrival: boolean;
   isBestSeller: boolean;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -138,6 +139,11 @@ const productSchema = new Schema<IProduct>(
     isBestSeller: {
       type: Boolean,
       default: false,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
     },
   },
   {

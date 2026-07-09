@@ -58,6 +58,8 @@ export async function listProducts(query: ListProductsQuery) {
   // A product is "on sale" when it has a positive discountPrice; the $gt check
   // also excludes docs where the field is absent (no discount).
   if (query.onSale) filter.discountPrice = { $gt: 0 };
+  // Hide disabled products from customers; admin listing passes includeInactive.
+  if (!query.includeInactive) filter.isActive = { $ne: false };
   if (query.search) filter.$text = { $search: query.search };
 
   const { page, limit, skip } = parsePagination(query);
@@ -164,6 +166,7 @@ export async function createProduct(input: CreateProductInput, files?: Express.M
     flashSaleEndsAt: input.flashSaleEndsAt,
     isNewArrival: input.isNewArrival ?? false,
     isBestSeller: input.isBestSeller ?? false,
+    isActive: input.isActive ?? true,
   });
 }
 
@@ -199,6 +202,7 @@ export async function updateProduct(
   if (input.flashSaleEndsAt !== undefined) product.flashSaleEndsAt = input.flashSaleEndsAt;
   if (input.isNewArrival !== undefined) product.isNewArrival = input.isNewArrival;
   if (input.isBestSeller !== undefined) product.isBestSeller = input.isBestSeller;
+  if (input.isActive !== undefined) product.isActive = input.isActive;
 
   const uploadedImages = (files ?? []).map((f) => saveUploadedFile(f, 'products'));
   if (input.images !== undefined || uploadedImages.length) {

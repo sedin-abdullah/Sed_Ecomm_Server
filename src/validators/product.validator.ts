@@ -44,6 +44,7 @@ export const createProductSchema = z.object({
   flashSaleEndsAt: z.coerce.date().optional(),
   isNewArrival: boolish,
   isBestSeller: boolish,
+  isActive: boolish,
 });
 
 export const updateProductSchema = createProductSchema.partial();
@@ -66,6 +67,7 @@ export const listProductsQuerySchema = z.object({
   bestSeller: boolish,
   inStock: boolish,
   onSale: boolish,
+  includeInactive: boolish, // admin listing: include disabled products
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>;
