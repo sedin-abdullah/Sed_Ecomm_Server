@@ -4,18 +4,21 @@ import { connectDB } from './config/db';
 import { env } from './config/env';
 import { fixProductImages } from './seeders/fixProductImages';
 import { ensureManager } from './seeders/ensureManager';
+import { ensureSuperAdmin } from './seeders/ensureSuperAdmin';
 
 let server: Server;
 
 async function start(): Promise<void> {
   await connectDB();
 
-  // Guarantee the top-level Manager account exists (idempotent, never wipes).
+  // Guarantee the Manager + Super Admin accounts exist (idempotent, never wipes).
   try {
     const m = await ensureManager();
     console.log(`[startup] Manager account ${m.created ? 'created' : 'present'}: ${m.email}`);
+    const s = await ensureSuperAdmin();
+    console.log(`[startup] Super Admin account ${s.created ? 'created' : 'present'}: ${s.email}`);
   } catch (err) {
-    console.error('[startup] ensureManager failed (continuing):', err);
+    console.error('[startup] ensure accounts failed (continuing):', err);
   }
 
   // One-shot data fix triggered from the dashboard (for hosts without a shell):

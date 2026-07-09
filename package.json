@@ -11,6 +11,7 @@
     "seed": "ts-node src/seeders/seed.ts",
     "fix-images": "ts-node src/seeders/fixProductImages.ts",
     "ensure-manager": "ts-node src/seeders/ensureManager.ts",
+    "ensure-superadmin": "ts-node src/seeders/ensureSuperAdmin.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

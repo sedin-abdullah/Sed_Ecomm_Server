@@ -6,15 +6,21 @@ import { createAdminSchema, setAdminStatusSchema } from '../validators/manager.v
 
 const router = Router();
 
-// Manager-only. NOTE: restrictTo('manager') does NOT include admins — only the
-// manager can provision/disable admin accounts.
+// Everything here needs manager+ (manager or superadmin). Routes that are
+// superadmin-only add a second restrictTo('superadmin').
 router.use(protect, restrictTo('manager'));
 
-router.post('/admins', validate(createAdminSchema), managerController.createAdmin);
-router.get('/admins', managerController.listAdmins);
-router.patch('/admins/:id/status', validate(setAdminStatusSchema), managerController.setAdminStatus);
+// Store Owner accounts — manager+ can provision/manage.
+router.post('/store-owners', validate(createAdminSchema), managerController.createStoreOwner);
+router.get('/store-owners', managerController.listStoreOwners);
+router.patch('/store-owners/:id/status', validate(setAdminStatusSchema), managerController.setStoreOwnerStatus);
 
-// Activity log (fraud monitoring)
-router.get('/activity', managerController.listActivity);
+// Manager accounts — superadmin only.
+router.post('/managers', restrictTo('superadmin'), validate(createAdminSchema), managerController.createManager);
+router.get('/managers', restrictTo('superadmin'), managerController.listManagers);
+router.patch('/managers/:id/status', restrictTo('superadmin'), validate(setAdminStatusSchema), managerController.setManagerStatus);
+
+// Complete activity log — superadmin only.
+router.get('/activity', restrictTo('superadmin'), managerController.listActivity);
 
 export default router;

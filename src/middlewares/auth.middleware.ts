@@ -38,17 +38,22 @@ export const protect = asyncHandler(async (req: Request, _res: Response, next: N
 });
 
 /**
- * Restricts access to users whose role is included in `roles`. Must be
- * used after `protect` so that `req.user` is populated.
- *
- * Role hierarchy: `manager` is a superset of `admin`, so a manager passes any
- * route that allows `admin` (no need to list 'manager' on every admin route).
+ * Role hierarchy: customer < admin (Store Owner) < manager < superadmin.
+ * `restrictTo(role)` allows that role AND anyone above it, so a manager passes
+ * an `admin`-gated route and a superadmin passes everything. Chaining a second
+ * `restrictTo('superadmin')` on a specific route narrows it to superadmin only.
  */
+const ROLE_RANK: Record<UserRole, number> = {
+  customer: 0,
+  admin: 1,
+  manager: 2,
+  superadmin: 3,
+};
+
 export function restrictTo(...roles: UserRole[]) {
-  const allowed = new Set(roles);
-  if (allowed.has('admin')) allowed.add('manager');
+  const minRank = Math.min(...roles.map((r) => ROLE_RANK[r]));
   return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user || !allowed.has(req.user.role)) {
+    if (!req.user || ROLE_RANK[req.user.role] < minRank) {
       next(new AppError('You do not have permission to perform this action', 403));
       return;
     }

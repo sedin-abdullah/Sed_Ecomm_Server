@@ -1,7 +1,9 @@
 import bcrypt from 'bcrypt';
 import { Document, Model, Schema, Types, model } from 'mongoose';
 
-export type UserRole = 'customer' | 'admin' | 'manager';
+// Internal role values. UI labels: admin = "Store Owner", manager = "Manager",
+// superadmin = "Super Admin". Hierarchy: customer < admin < manager < superadmin.
+export type UserRole = 'customer' | 'admin' | 'manager' | 'superadmin';
 
 export interface IUser extends Document {
   name: string;
@@ -47,7 +49,7 @@ const userSchema = new Schema<IUser>(
     },
     role: {
       type: String,
-      enum: ['customer', 'admin', 'manager'],
+      enum: ['customer', 'admin', 'manager', 'superadmin'],
       default: 'customer',
     },
     phone: {
