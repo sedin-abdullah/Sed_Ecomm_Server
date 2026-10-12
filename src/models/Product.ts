@@ -44,6 +44,8 @@ export interface IProduct extends Document {
   flashSaleEndsAt?: Date;
   isNewArrival: boolean;
   isBestSeller: boolean;
+  blockAddToCart: boolean;
+  blockCheckout: boolean;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -137,6 +139,17 @@ const productSchema = new Schema<IProduct>(
       default: false,
     },
     isBestSeller: {
+      type: Boolean,
+      default: false,
+    },
+    // Admin test toggles: when true, simulate a checkout-flow failure. Missing
+    // on existing documents is treated as false (default), so no migration is
+    // needed and behaviour is unchanged while both are off.
+    blockAddToCart: {
+      type: Boolean,
+      default: false,
+    },
+    blockCheckout: {
       type: Boolean,
       default: false,
     },

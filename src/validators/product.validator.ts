@@ -44,6 +44,8 @@ export const createProductSchema = z.object({
   flashSaleEndsAt: z.coerce.date().optional(),
   isNewArrival: boolish,
   isBestSeller: boolish,
+  blockAddToCart: boolish,
+  blockCheckout: boolish,
   isActive: boolish,
 });
 

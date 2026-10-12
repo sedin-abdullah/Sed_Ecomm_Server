@@ -13,7 +13,7 @@ export interface CartTotals {
   couponCode?: string;
 }
 
-const CART_ITEM_POPULATE = 'name slug images price discountPrice stock rating numReviews';
+const CART_ITEM_POPULATE = 'name slug images price discountPrice stock rating numReviews blockCheckout';
 
 // Kept in sync with order.service.ts so the cart's estimated totals match what
 // the customer is actually charged at checkout.

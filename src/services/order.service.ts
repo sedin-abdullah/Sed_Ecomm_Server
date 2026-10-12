@@ -93,6 +93,12 @@ export async function createOrder(userId: string, input: CreateOrderInput): Prom
 
   const resolvedItems = await resolveOrderItems(userId, input);
 
+  // Admin test toggle: block checkout when any item is flagged. Checked up
+  // front so no stock/coupon side effects run before the rejection.
+  if (resolvedItems.some(({ product }) => product.blockCheckout)) {
+    throw new AppError('Checkout is currently unavailable for one or more items in your cart.', 400);
+  }
+
   for (const { product, qty } of resolvedItems) {
     if (product.stock < qty) {
       throw new AppError(`Insufficient stock for "${product.name}"`, 400);

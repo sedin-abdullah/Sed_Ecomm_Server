@@ -166,6 +166,8 @@ export async function createProduct(input: CreateProductInput, files?: Express.M
     flashSaleEndsAt: input.flashSaleEndsAt,
     isNewArrival: input.isNewArrival ?? false,
     isBestSeller: input.isBestSeller ?? false,
+    blockAddToCart: input.blockAddToCart ?? false,
+    blockCheckout: input.blockCheckout ?? false,
     isActive: input.isActive ?? true,
   });
 }
@@ -202,6 +204,8 @@ export async function updateProduct(
   if (input.flashSaleEndsAt !== undefined) product.flashSaleEndsAt = input.flashSaleEndsAt;
   if (input.isNewArrival !== undefined) product.isNewArrival = input.isNewArrival;
   if (input.isBestSeller !== undefined) product.isBestSeller = input.isBestSeller;
+  if (input.blockAddToCart !== undefined) product.blockAddToCart = input.blockAddToCart;
+  if (input.blockCheckout !== undefined) product.blockCheckout = input.blockCheckout;
   if (input.isActive !== undefined) product.isActive = input.isActive;
 
   const uploadedImages = (files ?? []).map((f) => saveUploadedFile(f, 'products'));

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import * as cartService from '../services/cart.service';
 import { CartTotals } from '../services/cart.service';
 import { ICart } from '../models/Cart';
+import { Product } from '../models/Product';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendResponse } from '../utils/sendResponse';
@@ -40,6 +41,12 @@ export const getCart = asyncHandler(async (req: Request, res: Response) => {
 
 export const addItem = asyncHandler(
   async (req: Request<unknown, unknown, AddCartItemInput>, res: Response) => {
+    // Admin test toggle: reject before the item is added when the product is
+    // flagged to block add-to-cart. Rest of the handler is untouched.
+    const blocked = await Product.findById(req.body.productId).select('blockAddToCart');
+    if (blocked?.blockAddToCart) {
+      throw new AppError('Unable to add this product to cart.', 400);
+    }
     const { cart, totals } = await cartService.addItem(requireUserId(req), req.body);
     sendResponse(res, 201, { data: serializeCart(cart, totals), message: 'Item added to cart' });
   },
