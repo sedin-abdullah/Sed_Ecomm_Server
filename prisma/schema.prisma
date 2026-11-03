@@ -275,8 +275,8 @@ model Order {
   id                 String             @id @default(uuid()) @db.Uuid
   userId             String             @map("user_id") @db.Uuid
   user               User               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  shippingAddressId  String             @map("shipping_address_id") @db.Uuid
-  shippingAddress    Address            @relation("ShippingAddress", fields: [shippingAddressId], references: [id], onDelete: Restrict)
+  shippingAddressId  String?            @map("shipping_address_id") @db.Uuid
+  shippingAddress    Address?           @relation("ShippingAddress", fields: [shippingAddressId], references: [id], onDelete: SetNull)
   billingAddressId   String?            @map("billing_address_id") @db.Uuid
   billingAddress     Address?           @relation("BillingAddress", fields: [billingAddressId], references: [id], onDelete: SetNull)
   subtotal           Decimal            @db.Decimal(10, 2)

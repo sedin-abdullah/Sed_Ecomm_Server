@@ -12,3 +12,4 @@ uploads/
 
 /src/generated/prisma
 src/generated
+scripts/id-map.json
