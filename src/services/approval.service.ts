@@ -1,23 +1,37 @@
-import { ChangeRequest, ChangeAction, ChangeModule, ChangeStatus, FieldChange, IChangeRequest } from '../models/ChangeRequest';
-import { Product } from '../models/Product';
-import { Category } from '../models/Category';
-import { Coupon } from '../models/Coupon';
-import { Order } from '../models/Order';
-import { IUser } from '../models/User';
+import { prisma } from '../config/prisma';
+import { Prisma } from '../generated/prisma/client';
+import type { ChangeAction, ChangeModule, ChangeStatus } from '../generated/prisma/client';
+import { toApi } from '../utils/serialize';
+import { isUuid } from '../utils/uuid';
+
+/** A single old→new field diff in an activity-log entry (ported from the Mongoose model). */
+interface FieldChange {
+  field: string;
+  from?: unknown;
+  to?: unknown;
+}
+
+/** Shapes a change-request row: `_id`, and `actor`/`reviewer` ids (old doc used `actor`/`reviewer` ObjectIds). */
+function serializeChangeRequest(row: Record<string, unknown>): Record<string, unknown> {
+  const api = toApi(row) as Record<string, unknown>;
+  const { actorId, reviewerId, ...rest } = api;
+  return { ...rest, actor: actorId, reviewer: reviewerId ?? undefined };
+}
 
 // Fields that are noise in an activity diff.
 const IGNORED_FIELDS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'id', 'images', 'password']);
 
 /** Snapshot the current entity BEFORE a change so the log has an old→new view. */
 export async function snapshotBefore(module: ChangeModule, targetId?: string): Promise<Record<string, unknown> | undefined> {
-  if (!targetId) return undefined;
+  if (!targetId || !isUuid(targetId)) return undefined;
   const doc =
-    module === 'product' ? await Product.findById(targetId) :
-    module === 'category' ? await Category.findById(targetId) :
-    module === 'coupon' ? await Coupon.findById(targetId) :
-    module === 'order' ? await Order.findById(targetId) :
+    module === 'product' ? await prisma.product.findUnique({ where: { id: targetId } }) :
+    module === 'category' ? await prisma.category.findUnique({ where: { id: targetId } }) :
+    module === 'coupon' ? await prisma.coupon.findUnique({ where: { id: targetId } }) :
+    module === 'order' ? await prisma.order.findUnique({ where: { id: targetId } }) :
     null;
-  return doc ? (doc.toObject() as unknown as Record<string, unknown>) : undefined;
+  // toApi normalises Decimal → number so the before/after diff compares cleanly.
+  return doc ? (toApi(doc) as Record<string, unknown>) : undefined;
 }
 
 /** Field-level before→after diff of the submitted payload vs the prior state. */
@@ -61,8 +75,19 @@ function summarize(
   return `Updated ${module} “${name}”${fields ? ` — ${fields}` : ''}`;
 }
 
+/**
+ * Minimal shape of the acting user. Accepts both the new Prisma `PublicUser`
+ * (has `_id`/`id`) and, during the migration, the old Mongoose `IUser`.
+ */
+interface LogActor {
+  _id?: unknown;
+  id?: string;
+  name: string;
+  role: string;
+}
+
 interface LogParams {
-  actor: IUser;
+  actor: LogActor;
   module: ChangeModule;
   action: ChangeAction;
   targetId?: string;
@@ -73,33 +98,48 @@ interface LogParams {
 }
 
 /** Records an admin/manager action that has already been applied (monitor-only). */
-export async function logActivity(params: LogParams): Promise<IChangeRequest> {
+export async function logActivity(params: LogParams): Promise<void> {
   const changes = params.action === 'create' || params.action === 'delete' ? [] : computeChanges(params.before, params.payload);
   const resultObj = (params.result ?? {}) as Record<string, unknown>;
   const label = params.targetLabel || (resultObj.name as string) || (resultObj.code as string) || '';
-  const targetId = params.targetId || (resultObj._id ? String(resultObj._id) : undefined);
+  const actorId = String(params.actor._id ?? params.actor.id ?? '');
+  const targetId =
+    params.targetId ||
+    (resultObj._id ? String(resultObj._id) : resultObj.id ? String(resultObj.id) : undefined);
 
-  return ChangeRequest.create({
-    actor: params.actor._id,
-    actorName: params.actor.name,
-    actorRole: params.actor.role,
-    module: params.module,
-    action: params.action,
-    targetId,
-    targetLabel: label,
-    summary: summarize(params.module, params.action, label, changes, params.payload),
-    changes,
-    payload: params.payload,
-    before: params.before,
-    status: 'applied',
+  await prisma.changeRequest.create({
+    data: {
+      actorId,
+      actorName: params.actor.name,
+      actorRole: params.actor.role,
+      module: params.module,
+      action: params.action,
+      targetId,
+      targetLabel: label,
+      summary: summarize(params.module, params.action, label, changes, params.payload),
+      changes: changes as unknown as Prisma.InputJsonValue,
+      payload: params.payload === undefined ? undefined : (params.payload as Prisma.InputJsonValue),
+      before: params.before === undefined ? undefined : (params.before as Prisma.InputJsonValue),
+      status: 'applied',
+    },
   });
 }
 
-export async function listActivity(actorRole?: string, limit = 300): Promise<IChangeRequest[]> {
-  const filter = actorRole ? { actorRole } : {};
-  return ChangeRequest.find(filter).sort({ createdAt: -1 }).limit(limit);
+export async function listActivity(actorRole?: string, limit = 300) {
+  const rows = await prisma.changeRequest.findMany({
+    where: actorRole ? { actorRole } : {},
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+  return rows.map(serializeChangeRequest);
 }
 
 /** Backwards-compat alias used by the manager controller. */
-export const listChangeRequests = (status?: ChangeStatus, limit = 300) =>
-  ChangeRequest.find(status ? { status } : {}).sort({ createdAt: -1 }).limit(limit);
+export async function listChangeRequests(status?: ChangeStatus, limit = 300) {
+  const rows = await prisma.changeRequest.findMany({
+    where: status ? { status } : {},
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+  return rows.map(serializeChangeRequest);
+}

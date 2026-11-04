@@ -1,15 +1,42 @@
 import { NextFunction, Request, Response } from 'express';
-import mongoose from 'mongoose';
 import { isProduction } from '../config/env';
 import { AppError } from '../utils/AppError';
 
-interface MongoDuplicateKeyError extends Error {
-  code: number;
-  keyValue?: Record<string, unknown>;
+interface PrismaUniqueConstraintError extends Error {
+  code: 'P2002';
+  meta?: {
+    // Standard shape (no driver adapter): the offending column(s).
+    target?: string[] | string;
+    // Driver-adapter (pg) shape: the violated constraint, from which we recover the field.
+    driverAdapterError?: { cause?: { table?: string; constraint?: { index?: string } } };
+  };
 }
 
-function isDuplicateKeyError(err: unknown): err is MongoDuplicateKeyError {
-  return typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000;
+// Prisma's unique-constraint violation (P2002) is the Postgres equivalent of
+// Mongo's 11000 duplicate-key error. We surface it with the same 409 + message.
+function isPrismaUniqueError(err: unknown): err is PrismaUniqueConstraintError {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+}
+
+function prismaUniqueField(err: PrismaUniqueConstraintError): string {
+  const target = err.meta?.target;
+  if (Array.isArray(target)) return target[0] ?? 'field';
+  if (typeof target === 'string' && target) return target;
+
+  // With the pg driver adapter, `target` is absent; derive the field from the
+  // constraint index name (e.g. `categories_name_key` + table `categories` → `name`).
+  const cause = err.meta?.driverAdapterError?.cause;
+  const index = cause?.constraint?.index;
+  if (index) {
+    let field = index;
+    if (cause?.table && field.startsWith(`${cause.table}_`)) {
+      field = field.slice(cause.table.length + 1);
+    }
+    field = field.replace(/_(key|pkey)$/, '');
+    if (field) return field;
+  }
+
+  return 'field';
 }
 
 /**
@@ -22,17 +49,9 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   let message = 'Internal server error';
   let errors: unknown[] | undefined;
 
-  if (err instanceof mongoose.Error.CastError) {
-    statusCode = 400;
-    message = `Invalid value "${String(err.value)}" for field "${err.path}"`;
-  } else if (err instanceof mongoose.Error.ValidationError) {
-    statusCode = 400;
-    message = 'Validation failed';
-    errors = Object.values(err.errors).map((e) => e.message);
-  } else if (isDuplicateKeyError(err)) {
+  if (isPrismaUniqueError(err)) {
     statusCode = 409;
-    const field = err.keyValue ? Object.keys(err.keyValue)[0] : 'field';
-    message = `Duplicate value for "${field}". Please use another value.`;
+    message = `Duplicate value for "${prismaUniqueField(err)}". Please use another value.`;
   } else if (err instanceof AppError) {
     statusCode = err.statusCode;
     message = err.message;

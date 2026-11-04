@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { logActivity, snapshotBefore } from '../services/approval.service';
 import { sendResponse } from './sendResponse';
-import { ChangeAction, ChangeModule } from '../models/ChangeRequest';
+import type { ChangeAction, ChangeModule } from '../generated/prisma/client';
 
 interface GateMeta {
   module: ChangeModule;
@@ -26,7 +26,15 @@ export async function gate(
   applyNow: () => Promise<unknown>,
 ): Promise<void> {
   // Snapshot the prior state BEFORE applying so the log has an old→new diff.
-  const before = meta.action === 'create' ? undefined : await snapshotBefore(meta.module, meta.targetId);
+  // Best-effort: a snapshot failure must never block the primary operation.
+  let before: Record<string, unknown> | undefined;
+  if (meta.action !== 'create') {
+    try {
+      before = await snapshotBefore(meta.module, meta.targetId);
+    } catch {
+      before = undefined;
+    }
+  }
 
   const result = await applyNow();
 

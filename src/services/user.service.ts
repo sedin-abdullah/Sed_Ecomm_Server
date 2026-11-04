@@ -1,59 +1,87 @@
-import { Address, IAddress } from '../models/Address';
-import { IUser, User } from '../models/User';
+import bcrypt from 'bcrypt';
+import { prisma } from '../config/prisma';
+import type { ApiAddress, PublicUser } from '../types/user';
 import { AppError } from '../utils/AppError';
+import { toApi } from '../utils/serialize';
+import { isUuid } from '../utils/uuid';
 import { CreateAddressInput, UpdateAddressInput, UpdateMeInput } from '../validators/user.validator';
 
-export async function updateMe(userId: string, input: UpdateMeInput): Promise<IUser> {
-  const user = await User.findById(userId);
-  if (!user) {
-    throw new AppError('User not found', 404);
-  }
+const SALT_ROUNDS = 12;
 
-  if (input.name !== undefined) user.name = input.name;
-  if (input.phone !== undefined) user.phone = input.phone;
-  if (input.avatar !== undefined) user.avatar = input.avatar;
-
-  await user.save();
-  return user;
+/**
+ * Password hashing helpers. These replace the Mongoose `pre('save')` hook: any
+ * code path that sets or changes a user's password must hash it through here.
+ */
+export function hashPassword(plain: string): Promise<string> {
+  return bcrypt.hash(plain, SALT_ROUNDS);
 }
 
-export async function listAddresses(userId: string): Promise<IAddress[]> {
-  return Address.find({ user: userId }).sort({ isDefault: -1, createdAt: -1 });
+export function comparePassword(plain: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(plain, hash);
 }
 
-export async function createAddress(userId: string, input: CreateAddressInput): Promise<IAddress> {
+export async function updateMe(userId: string, input: UpdateMeInput): Promise<PublicUser> {
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.phone !== undefined ? { phone: input.phone } : {}),
+      ...(input.avatar !== undefined ? { avatar: input.avatar } : {}),
+    },
+  });
+  return toApi(user) as PublicUser;
+}
+
+export async function listAddresses(userId: string): Promise<ApiAddress[]> {
+  const addresses = await prisma.address.findMany({
+    where: { userId },
+    orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+  });
+  return toApi(addresses) as ApiAddress[];
+}
+
+export async function createAddress(userId: string, input: CreateAddressInput): Promise<ApiAddress> {
   if (input.isDefault) {
-    await Address.updateMany({ user: userId }, { isDefault: false });
+    await prisma.address.updateMany({ where: { userId }, data: { isDefault: false } });
   }
 
-  const address = await Address.create({ ...input, user: userId });
-  await User.findByIdAndUpdate(userId, { $addToSet: { addresses: address._id } });
-  return address;
+  const address = await prisma.address.create({ data: { ...input, userId } });
+  return toApi(address) as ApiAddress;
 }
 
 export async function updateAddress(
   userId: string,
   addressId: string,
   input: UpdateAddressInput,
-): Promise<IAddress> {
-  const address = await Address.findOne({ _id: addressId, user: userId });
-  if (!address) {
+): Promise<ApiAddress> {
+  if (!isUuid(addressId)) {
+    throw new AppError(`Invalid value "${addressId}" for field "id"`, 400);
+  }
+
+  const existing = await prisma.address.findFirst({ where: { id: addressId, userId } });
+  if (!existing) {
     throw new AppError('Address not found', 404);
   }
 
   if (input.isDefault) {
-    await Address.updateMany({ user: userId, _id: { $ne: addressId } }, { isDefault: false });
+    await prisma.address.updateMany({
+      where: { userId, id: { not: addressId } },
+      data: { isDefault: false },
+    });
   }
 
-  Object.assign(address, input);
-  await address.save();
-  return address;
+  const address = await prisma.address.update({ where: { id: addressId }, data: input });
+  return toApi(address) as ApiAddress;
 }
 
 export async function deleteAddress(userId: string, addressId: string): Promise<void> {
-  const address = await Address.findOneAndDelete({ _id: addressId, user: userId });
-  if (!address) {
+  if (!isUuid(addressId)) {
+    throw new AppError(`Invalid value "${addressId}" for field "id"`, 400);
+  }
+
+  const existing = await prisma.address.findFirst({ where: { id: addressId, userId } });
+  if (!existing) {
     throw new AppError('Address not found', 404);
   }
-  await User.findByIdAndUpdate(userId, { $pull: { addresses: addressId } });
+  await prisma.address.delete({ where: { id: addressId } });
 }

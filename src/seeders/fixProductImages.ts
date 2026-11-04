@@ -7,13 +7,12 @@
  * carts, wishlists and product IDs are all preserved.
  *
  * Two ways to run it:
- *  - CLI:      MONGODB_URI=<uri> npm run fix-images
+ *  - CLI:      DATABASE_URL=<uri> npm run fix-images
  *  - On boot:  set env RUN_IMAGE_FIX=1 (server.ts calls fixProductImages()
  *              once after connecting) — useful on hosts without shell access.
  */
-import mongoose from 'mongoose';
 import { connectDB } from '../config/db';
-import { Product } from '../models/Product';
+import { prisma } from '../config/prisma';
 import { NOUN_IMAGES } from './productImages';
 
 const IMAGES_PER_PRODUCT = 4;
@@ -33,9 +32,9 @@ function nounFromName(name: string): string {
   return name.split(' ').slice(1).join(' ').trim();
 }
 
-/** Rewrites images for all products. Assumes a live mongoose connection. */
+/** Rewrites images for all products. Assumes the Prisma client is connected. */
 export async function fixProductImages(): Promise<{ updated: number; skipped: string[] }> {
-  const products = await Product.find();
+  const products = await prisma.product.findMany();
   let updated = 0;
   const skipped: string[] = [];
 
@@ -47,8 +46,7 @@ export async function fixProductImages(): Promise<{ updated: number; skipped: st
       skipped.push(`${p.name} (noun="${noun}")`);
       continue;
     }
-    p.images = images;
-    await p.save();
+    await prisma.product.update({ where: { id: p.id }, data: { images } });
     updated += 1;
   }
 
@@ -62,7 +60,7 @@ if (require.main === module) {
     const { updated, skipped } = await fixProductImages();
     console.log(`\n✅ Product images fixed: ${updated} updated, ${skipped.length} skipped.`);
     if (skipped.length) console.log('   Skipped (no matching noun pool):', skipped.join(', '));
-    await mongoose.disconnect();
+    await prisma.$disconnect();
   })().catch((err) => {
     console.error('fix-images failed:', err);
     process.exit(1);

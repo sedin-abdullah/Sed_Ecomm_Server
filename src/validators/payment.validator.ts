@@ -1,7 +1,6 @@
-import { Types } from 'mongoose';
 import { z } from 'zod';
 
-const objectId = z.string().refine((v) => Types.ObjectId.isValid(v), 'Invalid id');
+const objectId = z.string().uuid('Invalid id');
 
 // This is a dummy payment gateway — no real card/bank is ever charged, so
 // details only need to be present, not realistic or checksum-valid.

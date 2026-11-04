@@ -5,19 +5,10 @@
  *
  * Run with `npm run seed`.
  */
-import mongoose from 'mongoose';
 import { connectDB } from '../config/db';
-import { Address } from '../models/Address';
-import { Cart } from '../models/Cart';
-import { Category } from '../models/Category';
-import { Coupon } from '../models/Coupon';
-import { EmailLog } from '../models/EmailLog';
-import { Order } from '../models/Order';
-import { Payment } from '../models/Payment';
-import { Product } from '../models/Product';
-import { Review } from '../models/Review';
-import { User } from '../models/User';
-import { Wishlist } from '../models/Wishlist';
+import { prisma } from '../config/prisma';
+import { hashPassword } from '../services/user.service';
+import { slugify } from '../utils/slug';
 import { NOUN_IMAGES } from './productImages';
 
 const ADMIN_EMAIL = 'admin@sedecomm.com';
@@ -101,44 +92,64 @@ function imagesForNoun(noun: string, offset: number): string[] {
 async function seed(): Promise<void> {
   await connectDB();
 
-  console.log('[seed] Wiping catalog and transactional collections...');
-  await Promise.all([
-    Product.deleteMany({}),
-    Category.deleteMany({}),
-    Coupon.deleteMany({}),
-    Review.deleteMany({}),
-    Cart.deleteMany({}),
-    Wishlist.deleteMany({}),
-    Order.deleteMany({}),
-    Payment.deleteMany({}),
-    EmailLog.deleteMany({}),
-  ]);
-  const existingSeedUsers = await User.find({ email: { $in: [ADMIN_EMAIL, DEMO_EMAIL] } }).select('_id');
-  if (existingSeedUsers.length > 0) {
-    await Address.deleteMany({ user: { $in: existingSeedUsers.map((u) => u._id) } });
-    await User.deleteMany({ _id: { $in: existingSeedUsers.map((u) => u._id) } });
-  }
+  // In-memory slug allocator: names can collide across the catalog, and both
+  // Category.slug and Product.slug are UNIQUE. Mirrors uniqueSlug's `-2`, `-3`
+  // suffixing without a DB round-trip per product (the catalog is freshly wiped).
+  const takenSlugs = new Set<string>();
+  const nextSlug = (name: string): string => {
+    const base = slugify(name);
+    let candidate = base;
+    let suffix = 1;
+    while (takenSlugs.has(candidate)) {
+      suffix += 1;
+      candidate = `${base}-${suffix}`;
+    }
+    takenSlugs.add(candidate);
+    return candidate;
+  };
+
+  console.log('[seed] Wiping catalog and transactional data...');
+  // Delete children before parents so Restrict FKs (payment→order, product→
+  // category) don't block. Cascades clear order items, tracking events, review
+  // likes, cart/wishlist items automatically.
+  await prisma.payment.deleteMany();
+  await prisma.emailLog.deleteMany();
+  await prisma.order.deleteMany();
+  await prisma.review.deleteMany();
+  await prisma.cart.deleteMany();
+  await prisma.wishlist.deleteMany();
+  await prisma.product.deleteMany();
+  // Self-referencing tree: remove child categories before parents.
+  await prisma.category.deleteMany({ where: { parentId: { not: null } } });
+  await prisma.category.deleteMany();
+  await prisma.coupon.deleteMany();
+  // Only the two demo accounts are recreated; other users are preserved.
+  // Their addresses cascade on user delete.
+  await prisma.user.deleteMany({ where: { email: { in: [ADMIN_EMAIL, DEMO_EMAIL] } } });
 
   console.log('[seed] Creating categories...');
   let productCounter = 0;
-  let categoryCounter = 0;
   let productsCreated = 0;
   const now = new Date();
 
   for (const [parentName, subcategories] of Object.entries(CATEGORY_TREE)) {
-    categoryCounter += 1;
-    const parent = await Category.create({
-      name: parentName,
-      // Represent the parent with its first subcategory's real product image.
-      image: NOUN_IMAGES[subcategories[0].noun]?.[0],
+    const parent = await prisma.category.create({
+      data: {
+        name: parentName,
+        slug: nextSlug(parentName),
+        // Represent the parent with its first subcategory's real product image.
+        image: NOUN_IMAGES[subcategories[0].noun]?.[0],
+      },
     });
 
     for (const spec of subcategories) {
-      categoryCounter += 1;
-      const child = await Category.create({
-        name: spec.name,
-        parent: parent._id,
-        image: NOUN_IMAGES[spec.noun]?.[0],
+      const child = await prisma.category.create({
+        data: {
+          name: spec.name,
+          slug: nextSlug(spec.name),
+          parentId: parent.id,
+          image: NOUN_IMAGES[spec.noun]?.[0],
+        },
       });
 
       for (let i = 0; i < PRODUCTS_PER_SUBCATEGORY; i += 1) {
@@ -157,25 +168,27 @@ async function seed(): Promise<void> {
         const isNewArrival = productCounter % 5 === 0;
         const isBestSeller = productCounter % 6 === 0;
 
-        await Product.create({
-          name,
-          description: `${adjective} ${spec.noun.toLowerCase()} from ${brand}, designed for everyday comfort, durability, and style. A great addition to your ${parentName.toLowerCase()} collection.`,
-          category: child._id,
-          brand,
-          price,
-          discountPrice,
-          images,
-          variants: {
+        await prisma.product.create({
+          data: {
+            name,
+            slug: nextSlug(name),
+            description: `${adjective} ${spec.noun.toLowerCase()} from ${brand}, designed for everyday comfort, durability, and style. A great addition to your ${parentName.toLowerCase()} collection.`,
+            categoryId: child.id,
+            brand,
+            price,
+            discountPrice,
+            images,
+            // Mongoose embedded `variants` → flat Postgres array columns.
             sizes: spec.sizes ?? [],
             colors: spec.colors,
+            stock,
+            tags: [parentName.toLowerCase(), spec.name.toLowerCase(), brand.toLowerCase()],
+            isFeatured,
+            isFlashSale,
+            flashSaleEndsAt: isFlashSale ? new Date(now.getTime() + 48 * 60 * 60 * 1000) : null,
+            isNewArrival,
+            isBestSeller,
           },
-          stock,
-          tags: [parentName.toLowerCase(), spec.name.toLowerCase(), brand.toLowerCase()],
-          isFeatured,
-          isFlashSale,
-          flashSaleEndsAt: isFlashSale ? new Date(now.getTime() + 48 * 60 * 60 * 1000) : undefined,
-          isNewArrival,
-          isBestSeller,
         });
 
         productCounter += 1;
@@ -185,7 +198,8 @@ async function seed(): Promise<void> {
   }
 
   console.log('[seed] Creating coupons...');
-  await Coupon.create([
+  await prisma.coupon.createMany({
+    data: [
     {
       code: 'WELCOME10',
       type: 'percentage',
@@ -247,42 +261,48 @@ async function seed(): Promise<void> {
       usageLimit: 100,
       isActive: true,
     },
-  ]);
+    ],
+  });
 
   console.log('[seed] Creating admin and demo users...');
-  const admin = await User.create({
-    name: 'Sed Ecomm Admin',
-    email: ADMIN_EMAIL,
-    password: 'Admin@123',
-    role: 'admin',
-    isEmailVerified: true,
+  const admin = await prisma.user.create({
+    data: {
+      name: 'Sed Ecomm Admin',
+      email: ADMIN_EMAIL,
+      password: await hashPassword('Admin@123'),
+      role: 'admin',
+      isEmailVerified: true,
+    },
   });
 
-  const demoCustomer = await User.create({
-    name: 'Demo Customer',
-    email: DEMO_EMAIL,
-    password: 'Demo@123',
-    role: 'customer',
-    isEmailVerified: true,
+  const demoCustomer = await prisma.user.create({
+    data: {
+      name: 'Demo Customer',
+      email: DEMO_EMAIL,
+      password: await hashPassword('Demo@123'),
+      role: 'customer',
+      isEmailVerified: true,
+      // Addresses are a relation now — create the demo address inline so it's
+      // linked by userId (the old User.addresses array no longer exists).
+      addresses: {
+        create: {
+          fullName: 'Demo Customer',
+          phone: '+1 555 0100',
+          line1: '123 Market Street',
+          line2: 'Apt 4B',
+          city: 'San Francisco',
+          state: 'CA',
+          postalCode: '94103',
+          country: 'United States',
+          isDefault: true,
+          type: 'shipping',
+        },
+      },
+    },
   });
 
-  const demoAddress = await Address.create({
-    user: demoCustomer._id,
-    fullName: 'Demo Customer',
-    phone: '+1 555 0100',
-    line1: '123 Market Street',
-    line2: 'Apt 4B',
-    city: 'San Francisco',
-    state: 'CA',
-    postalCode: '94103',
-    country: 'United States',
-    isDefault: true,
-    type: 'shipping',
-  });
-  await User.findByIdAndUpdate(demoCustomer._id, { $addToSet: { addresses: demoAddress._id } });
-
-  const categoryCount = await Category.countDocuments({});
-  const couponCount = await Coupon.countDocuments({});
+  const categoryCount = await prisma.category.count();
+  const couponCount = await prisma.coupon.count();
 
   console.log('\n[seed] Done! Summary:');
   console.log(`  Categories:      ${categoryCount} (6 parent + ${categoryCount - 6} child)`);
@@ -291,7 +311,7 @@ async function seed(): Promise<void> {
   console.log(`  Admin user:      ${admin.email} / Admin@123`);
   console.log(`  Demo customer:   ${demoCustomer.email} / Demo@123`);
 
-  await mongoose.disconnect();
+  await prisma.$disconnect();
 }
 
 seed()

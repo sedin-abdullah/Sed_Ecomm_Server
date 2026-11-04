@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import * as cartService from '../services/cart.service';
-import { CartTotals } from '../services/cart.service';
-import { ICart } from '../models/Cart';
-import { Product } from '../models/Product';
+import { CartTotals, CartView } from '../services/cart.service';
+import { prisma } from '../config/prisma';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendResponse } from '../utils/sendResponse';
+import { isUuid } from '../utils/uuid';
 import { AddCartItemInput, ApplyCouponInput, UpdateCartItemInput } from '../validators/cart.validator';
 
 function requireUserId(req: Pick<Request, 'user'>): string {
@@ -14,11 +14,11 @@ function requireUserId(req: Pick<Request, 'user'>): string {
 }
 
 /** Flattens the {cart, totals} pair into the single object the client's `Cart` type expects. */
-function serializeCart(cart: ICart, totals: CartTotals) {
+function serializeCart(cart: CartView, totals: CartTotals) {
   return {
-    id: String(cart._id),
+    id: cart.id,
     items: cart.items.map((item) => ({
-      id: String(item._id),
+      id: item.id,
       product: item.product,
       variant: item.variant,
       qty: item.qty,
@@ -43,7 +43,9 @@ export const addItem = asyncHandler(
   async (req: Request<unknown, unknown, AddCartItemInput>, res: Response) => {
     // Admin test toggle: reject before the item is added when the product is
     // flagged to block add-to-cart. Rest of the handler is untouched.
-    const blocked = await Product.findById(req.body.productId).select('blockAddToCart');
+    const blocked = isUuid(req.body.productId)
+      ? await prisma.product.findUnique({ where: { id: req.body.productId }, select: { blockAddToCart: true } })
+      : null;
     if (blocked?.blockAddToCart) {
       throw new AppError('Unable to add this product to cart.', 400);
     }

@@ -1,7 +1,8 @@
-import { Cart, ICart } from '../models/Cart';
-import { Coupon, ICoupon } from '../models/Coupon';
-import { IProduct, Product } from '../models/Product';
+import { prisma } from '../config/prisma';
+import { toUsableCoupon, UsableCoupon } from './coupon.service';
 import { AppError } from '../utils/AppError';
+import { serializeProductSummary } from '../utils/serializeProduct';
+import { isUuid } from '../utils/uuid';
 import { AddCartItemInput, UpdateCartItemInput } from '../validators/cart.validator';
 
 export interface CartTotals {
@@ -13,7 +14,31 @@ export interface CartTotals {
   couponCode?: string;
 }
 
-const CART_ITEM_POPULATE = 'name slug images price discountPrice stock rating numReviews blockCheckout';
+export interface CartItemView {
+  _id: string;
+  id: string;
+  product: Record<string, unknown> | null;
+  variant: { size?: string; color?: string };
+  qty: number;
+  savedForLater: boolean;
+}
+
+export interface CartView {
+  _id: string;
+  id: string;
+  items: CartItemView[];
+  couponCode?: string;
+}
+
+// Product fields needed to price the cart + render each line (was CART_ITEM_POPULATE).
+const PRODUCT_SELECT = {
+  select: {
+    id: true, name: true, slug: true, images: true, price: true, discountPrice: true,
+    stock: true, rating: true, numReviews: true, blockCheckout: true,
+  },
+} as const;
+
+const CART_INCLUDE = { items: { include: { product: PRODUCT_SELECT } } };
 
 // Kept in sync with order.service.ts so the cart's estimated totals match what
 // the customer is actually charged at checkout.
@@ -21,25 +46,39 @@ const FREE_SHIPPING_THRESHOLD = 50;
 const FLAT_SHIPPING_FEE = 5.99;
 const TAX_RATE = 0.08;
 
-async function getOrCreateCart(userId: string): Promise<ICart> {
-  let cart = await Cart.findOne({ user: userId });
-  if (!cart) {
-    cart = await Cart.create({ user: userId, items: [] });
-  }
-  return cart;
+interface CartItemRow {
+  id: string;
+  productId: string;
+  size: string | null;
+  color: string | null;
+  qty: number;
+  savedForLater: boolean;
+  product: { price: unknown; discountPrice: unknown } & Record<string, unknown>;
+}
+
+interface CartRow {
+  id: string;
+  userId: string;
+  couponCode: string | null;
+  items: CartItemRow[];
 }
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+function toNum(decimal: unknown): number {
+  if (decimal === null || decimal === undefined) return 0;
+  return typeof decimal === 'number' ? decimal : Number((decimal as { toString(): string }).toString());
+}
+
 /** Total quantity of the currently-active (not saved-for-later) cart items. */
-function activeItemCount(cart: ICart): number {
+function activeItemCount(cart: CartRow): number {
   return cart.items.filter((item) => !item.savedForLater).reduce((sum, item) => sum + item.qty, 0);
 }
 
 /** Discount always applies to the whole cart value (value-based coupons). */
-function computeDiscount(coupon: ICoupon, subtotal: number): number {
+function computeDiscount(coupon: UsableCoupon, subtotal: number): number {
   let discount = coupon.type === 'flat' ? coupon.value : (subtotal * coupon.value) / 100;
   if (coupon.maxDiscount !== undefined) discount = Math.min(discount, coupon.maxDiscount);
   return round2(Math.min(discount, subtotal));
@@ -47,10 +86,10 @@ function computeDiscount(coupon: ICoupon, subtotal: number): number {
 
 /** Validates a coupon is currently usable; throws AppError describing why not. */
 export function assertCouponUsable(
-  coupon: ICoupon | null,
+  coupon: UsableCoupon | null,
   subtotal: number,
   itemCount: number,
-): asserts coupon is ICoupon {
+): asserts coupon is UsableCoupon {
   if (!coupon) {
     throw new AppError('Invalid coupon code', 404);
   }
@@ -66,17 +105,22 @@ export function assertCouponUsable(
   if (subtotal < coupon.minOrderValue) {
     throw new AppError(`A minimum order value of ${coupon.minOrderValue} is required for this coupon`, 400);
   }
-  if ((coupon.minItems ?? 0) > 0 && itemCount < coupon.minItems) {
+  if (coupon.minItems > 0 && itemCount < coupon.minItems) {
     throw new AppError(`This coupon requires at least ${coupon.minItems} items in your cart`, 400);
   }
 }
 
-async function computeTotals(cart: ICart): Promise<CartTotals> {
+async function getCartRow(userId: string): Promise<CartRow> {
+  const existing = await prisma.cart.findUnique({ where: { userId }, include: CART_INCLUDE });
+  if (existing) return existing as unknown as CartRow;
+  return (await prisma.cart.create({ data: { userId }, include: CART_INCLUDE })) as unknown as CartRow;
+}
+
+async function computeTotals(cart: CartRow): Promise<CartTotals> {
   const activeItems = cart.items.filter((item) => !item.savedForLater);
   const subtotal = round2(
     activeItems.reduce((sum, item) => {
-      const product = item.product as unknown as IProduct;
-      const price = product?.discountPrice ?? product?.price ?? 0;
+      const price = toNum(item.product.discountPrice ?? item.product.price);
       return sum + price * item.qty;
     }, 0),
   );
@@ -85,15 +129,15 @@ async function computeTotals(cart: ICart): Promise<CartTotals> {
   let couponCode: string | undefined;
 
   if (cart.couponCode) {
-    const coupon = await Coupon.findOne({ code: cart.couponCode });
+    const row = await prisma.coupon.findFirst({ where: { code: cart.couponCode } });
     try {
+      const coupon = row ? toUsableCoupon(row) : null;
       assertCouponUsable(coupon, subtotal, activeItemCount(cart));
-      discount = computeDiscount(coupon as ICoupon, subtotal);
+      discount = computeDiscount(coupon, subtotal);
       couponCode = cart.couponCode;
     } catch {
-      // Coupon is no longer valid (expired/deactivated/subtotal dropped below minimum) — silently drop it.
-      cart.couponCode = undefined;
-      await cart.save();
+      // Coupon no longer valid (expired/deactivated/subtotal dropped) — silently drop it.
+      await prisma.cart.update({ where: { id: cart.id }, data: { couponCode: null } });
     }
   }
 
@@ -105,18 +149,30 @@ async function computeTotals(cart: ICart): Promise<CartTotals> {
   return { subtotal, discount, shippingFee, tax, total, couponCode };
 }
 
-async function populateCart(cart: ICart): Promise<ICart> {
-  return cart.populate('items.product', CART_ITEM_POPULATE);
+function toCartView(cart: CartRow): CartView {
+  return {
+    _id: cart.id,
+    id: cart.id,
+    items: cart.items.map((item) => ({
+      _id: item.id,
+      id: item.id,
+      product: serializeProductSummary(item.product),
+      variant: { size: item.size ?? undefined, color: item.color ?? undefined },
+      qty: item.qty,
+      savedForLater: item.savedForLater,
+    })),
+    couponCode: cart.couponCode ?? undefined,
+  };
 }
 
-export async function getCart(userId: string): Promise<{ cart: ICart; totals: CartTotals }> {
-  const cart = await populateCart(await getOrCreateCart(userId));
+export async function getCart(userId: string): Promise<{ cart: CartView; totals: CartTotals }> {
+  const cart = await getCartRow(userId);
   const totals = await computeTotals(cart);
-  return { cart, totals };
+  return { cart: toCartView(cart), totals };
 }
 
 export async function addItem(userId: string, input: AddCartItemInput) {
-  const product = await Product.findById(input.productId);
+  const product = await prisma.product.findUnique({ where: { id: input.productId }, select: { stock: true } });
   if (!product) {
     throw new AppError('Product not found', 404);
   }
@@ -124,85 +180,75 @@ export async function addItem(userId: string, input: AddCartItemInput) {
     throw new AppError('Insufficient stock for this product', 400);
   }
 
-  const cart = await getOrCreateCart(userId);
-  const existing = cart.items.find(
-    (item) =>
-      String(item.product) === input.productId &&
-      !item.savedForLater &&
-      item.variant?.size === input.variant?.size &&
-      item.variant?.color === input.variant?.color,
-  );
+  const cart = await prisma.cart.upsert({ where: { userId }, create: { userId }, update: {}, select: { id: true } });
+  const size = input.variant?.size ?? null;
+  const color = input.variant?.color ?? null;
+
+  const existing = await prisma.cartItem.findFirst({
+    where: { cartId: cart.id, productId: input.productId, savedForLater: false, size, color },
+  });
 
   if (existing) {
-    existing.qty += input.qty;
+    await prisma.cartItem.update({ where: { id: existing.id }, data: { qty: existing.qty + input.qty } });
   } else {
-    cart.items.push({
-      product: product._id,
-      variant: input.variant,
-      qty: input.qty,
-      savedForLater: false,
+    await prisma.cartItem.create({
+      data: { cartId: cart.id, productId: input.productId, size, color, qty: input.qty, savedForLater: false },
     });
   }
 
-  await cart.save();
   return getCart(userId);
 }
 
-export async function updateItem(userId: string, itemId: string, input: UpdateCartItemInput) {
-  const cart = await getOrCreateCart(userId);
-  const item = cart.items.id(itemId);
+/** Finds a cart item that belongs to the user; malformed/absent id → 404 (matched old `.id()`). */
+async function findOwnedItem(userId: string, itemId: string) {
+  if (!isUuid(itemId)) {
+    throw new AppError('Cart item not found', 404);
+  }
+  const item = await prisma.cartItem.findFirst({ where: { id: itemId, cart: { userId } } });
   if (!item) {
     throw new AppError('Cart item not found', 404);
   }
+  return item;
+}
 
-  const product = await Product.findById(item.product);
+export async function updateItem(userId: string, itemId: string, input: UpdateCartItemInput) {
+  const item = await findOwnedItem(userId, itemId);
+
+  const product = await prisma.product.findUnique({ where: { id: item.productId }, select: { stock: true } });
   if (product && product.stock < input.qty) {
     throw new AppError('Insufficient stock for this product', 400);
   }
 
-  item.qty = input.qty;
-  await cart.save();
+  await prisma.cartItem.update({ where: { id: item.id }, data: { qty: input.qty } });
   return getCart(userId);
 }
 
 export async function removeItem(userId: string, itemId: string) {
-  const cart = await getOrCreateCart(userId);
-  const item = cart.items.id(itemId);
-  if (!item) {
-    throw new AppError('Cart item not found', 404);
-  }
-  cart.items.pull({ _id: itemId });
-  await cart.save();
+  const item = await findOwnedItem(userId, itemId);
+  await prisma.cartItem.delete({ where: { id: item.id } });
   return getCart(userId);
 }
 
 export async function toggleSaveForLater(userId: string, itemId: string) {
-  const cart = await getOrCreateCart(userId);
-  const item = cart.items.id(itemId);
-  if (!item) {
-    throw new AppError('Cart item not found', 404);
-  }
-  item.savedForLater = !item.savedForLater;
-  await cart.save();
+  const item = await findOwnedItem(userId, itemId);
+  await prisma.cartItem.update({ where: { id: item.id }, data: { savedForLater: !item.savedForLater } });
   return getCart(userId);
 }
 
 export async function applyCoupon(userId: string, code: string) {
-  const cart = await getOrCreateCart(userId);
-  const populated = await populateCart(cart);
-  const { subtotal } = await computeTotals(populated);
+  const cart = await getCartRow(userId);
+  const { subtotal } = await computeTotals(cart);
 
-  const coupon = await Coupon.findOne({ code: code.trim().toUpperCase() });
-  assertCouponUsable(coupon, subtotal, activeItemCount(populated));
+  const row = await prisma.coupon.findFirst({ where: { code: code.trim().toUpperCase() } });
+  const coupon = row ? toUsableCoupon(row) : null;
+  assertCouponUsable(coupon, subtotal, activeItemCount(cart));
 
-  cart.couponCode = coupon.code;
-  await cart.save();
+  await prisma.cart.update({ where: { id: cart.id }, data: { couponCode: coupon.code } });
   return getCart(userId);
 }
 
 export async function removeCoupon(userId: string) {
-  const cart = await getOrCreateCart(userId);
-  cart.couponCode = undefined;
-  await cart.save();
+  const cart = await prisma.cart.upsert({ where: { userId }, create: { userId }, update: {}, select: { id: true } });
+  await prisma.cart.update({ where: { id: cart.id }, data: { couponCode: null } });
   return getCart(userId);
 }
