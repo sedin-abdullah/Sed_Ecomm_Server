@@ -12,7 +12,8 @@
     "fix-images": "ts-node src/seeders/fixProductImages.ts",
     "ensure-manager": "ts-node src/seeders/ensureManager.ts",
     "ensure-superadmin": "ts-node src/seeders/ensureSuperAdmin.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "prisma generate"
   },
   "engines": {
     "node": "20.x"
