@@ -5,7 +5,7 @@ dotenv.config();
 interface EnvConfig {
   PORT: number;
   NODE_ENV: 'development' | 'production' | 'test';
-  MONGODB_URI: string;
+  DATABASE_URL: string;
   JWT_ACCESS_SECRET: string;
   JWT_REFRESH_SECRET: string;
   JWT_ACCESS_EXPIRES_IN: string;
@@ -16,7 +16,7 @@ interface EnvConfig {
 }
 
 const REQUIRED_VARS = [
-  'MONGODB_URI',
+  'DATABASE_URL',
   'JWT_ACCESS_SECRET',
   'JWT_REFRESH_SECRET',
 ] as const;
@@ -37,7 +37,7 @@ function loadEnv(): EnvConfig {
   return {
     PORT: port,
     NODE_ENV: nodeEnv,
-    MONGODB_URI: process.env.MONGODB_URI as string,
+    DATABASE_URL: process.env.DATABASE_URL as string,
     JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET as string,
     JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET as string,
     JWT_ACCESS_EXPIRES_IN: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',

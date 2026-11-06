@@ -1,7 +1,6 @@
-import { Types } from 'mongoose';
 import { z } from 'zod';
 
-const objectId = z.string().refine((v) => Types.ObjectId.isValid(v), 'Invalid id');
+const objectId = z.string().uuid('Invalid id');
 
 function toArray(val: unknown): string[] | undefined {
   if (val === undefined || val === null || val === '') return undefined;

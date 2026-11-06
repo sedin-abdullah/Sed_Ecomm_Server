@@ -1,11 +1,9 @@
 import crypto from 'crypto';
-import { Cart } from '../models/Cart';
-import { EmailLog } from '../models/EmailLog';
-import { IOrder, Order } from '../models/Order';
-import { IPayment, Payment } from '../models/Payment';
-import { User } from '../models/User';
+import { prisma } from '../config/prisma';
 import { AppError } from '../utils/AppError';
 import { detectCardBrand } from '../utils/luhn';
+import { toApi } from '../utils/serialize';
+import { assertUuid } from '../utils/uuid';
 import {
   CardDetails,
   InitiatePaymentInput,
@@ -23,42 +21,71 @@ function generateTransactionRef(): string {
   return `TXN-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 }
 
-async function finalizePaymentSuccess(order: IOrder): Promise<void> {
-  order.paymentStatus = 'success';
-  order.status = 'confirmed';
-  order.trackingTimeline.push({
-    status: 'confirmed',
-    timestamp: new Date(),
-    note: 'Payment confirmed, order is being processed',
+function toNum(decimal: unknown): number {
+  if (decimal === null || decimal === undefined) return 0;
+  return typeof decimal === 'number' ? decimal : Number((decimal as { toString(): string }).toString());
+}
+
+/** Shapes a payment for the API: `_id`, Decimal amount → number, and
+ *  `order`/`user` exposed as ids (the old doc had `order`/`user` ObjectIds). */
+function serializePayment(payment: Record<string, unknown>): Record<string, unknown> {
+  const api = toApi(payment) as Record<string, unknown>;
+  const { orderId, userId, ...rest } = api;
+  return { ...rest, order: orderId, user: userId };
+}
+
+interface OrderLite {
+  id: string;
+  userId: string;
+  total: unknown;
+  status: string;
+  paymentStatus: string;
+}
+
+async function finalizePaymentSuccess(order: OrderLite): Promise<void> {
+  await prisma.order.update({
+    where: { id: order.id },
+    data: {
+      paymentStatus: 'success',
+      status: 'confirmed',
+      trackingEvents: { create: { status: 'confirmed', timestamp: new Date(), note: 'Payment confirmed, order is being processed' } },
+    },
   });
-  await order.save();
 
-  // Only clear the cart once payment actually succeeds — clearing it at order
-  // creation meant a failed/retried payment left the customer with an empty
-  // cart and no way to pay for the items they just tried to buy.
-  await Cart.updateOne(
-    { user: order.user },
-    { $pull: { items: { savedForLater: false } }, $unset: { couponCode: 1 } },
-  );
+  // Only clear the cart once payment actually succeeds (a failed/retried payment
+  // must not strand the customer with an empty cart).
+  const cart = await prisma.cart.findUnique({ where: { userId: order.userId }, select: { id: true } });
+  if (cart) {
+    await prisma.cartItem.deleteMany({ where: { cartId: cart.id, savedForLater: false } });
+    await prisma.cart.update({ where: { id: cart.id }, data: { couponCode: null } });
+  }
 
-  const user = await User.findById(order.user);
-  const subject = `Order Confirmed - #${String(order._id).slice(-8).toUpperCase()}`;
-  const body = `Hi ${user?.name ?? 'there'}, your order #${String(order._id).slice(-8).toUpperCase()} totaling $${order.total.toFixed(2)} has been confirmed and is now being processed. Thank you for shopping with Sed_Ecomm!`;
+  const user = await prisma.user.findUnique({ where: { id: order.userId }, select: { name: true, email: true } });
+  const shortId = order.id.slice(-8).toUpperCase();
+  const subject = `Order Confirmed - #${shortId}`;
+  const body = `Hi ${user?.name ?? 'there'}, your order #${shortId} totaling $${toNum(order.total).toFixed(2)} has been confirmed and is now being processed. Thank you for shopping with Sed_Ecomm!`;
 
-  await EmailLog.create({ order: order._id, to: user?.email ?? 'unknown@sedecomm.com', subject, body });
+  await prisma.emailLog.create({ data: { orderId: order.id, to: user?.email ?? 'unknown@sedecomm.com', subject, body } });
   // eslint-disable-next-line no-console
   console.log(`[EMAIL SIMULATION] To: ${user?.email ?? 'unknown'} | Subject: ${subject} | Body: ${body}`);
 }
 
-async function markOrderPaymentFailed(order: IOrder): Promise<void> {
-  order.paymentStatus = 'failed';
-  order.status = 'payment_failed';
-  order.trackingTimeline.push({ status: 'payment_failed', timestamp: new Date(), note: 'Payment failed' });
-  await order.save();
+async function markOrderPaymentFailed(orderId: string): Promise<void> {
+  await prisma.order.update({
+    where: { id: orderId },
+    data: {
+      paymentStatus: 'failed',
+      status: 'payment_failed',
+      trackingEvents: { create: { status: 'payment_failed', timestamp: new Date(), note: 'Payment failed' } },
+    },
+  });
 }
 
 export async function initiatePayment(userId: string, input: InitiatePaymentInput, simulateFailure: boolean) {
-  const order = await Order.findOne({ _id: input.orderId, user: userId });
+  const order = await prisma.order.findFirst({
+    where: { id: input.orderId, userId },
+    select: { id: true, userId: true, total: true, status: true, paymentStatus: true },
+  });
   if (!order) {
     throw new AppError('Order not found', 404);
   }
@@ -76,7 +103,6 @@ export async function initiatePayment(userId: string, input: InitiatePaymentInpu
   if (method === 'card_credit' || method === 'card_debit') {
     const details = input.details as CardDetails | undefined;
     if (!details?.cardNumber) throw new AppError('Card details are required', 400);
-    // This is a dummy gateway — any card number is accepted, valid or not.
     cardLast4 = details.cardNumber.replace(/\D/g, '').slice(-4);
     cardBrand = detectCardBrand(details.cardNumber);
   } else if (method === 'upi') {
@@ -95,108 +121,110 @@ export async function initiatePayment(userId: string, input: InitiatePaymentInpu
 
   const requiresOtp = method === 'card_credit' || method === 'card_debit' || method === 'netbanking' || method === 'wallet';
 
-  const payment = await Payment.create({
-    order: order._id,
-    user: userId,
-    method,
-    status: 'pending',
-    amount: order.total,
-    cardLast4,
-    cardBrand,
-    upiVpa,
-    bankCode,
-    walletProvider,
-    requiresOtp,
-    forcedFailure: simulateFailure,
-    transactionRef: generateTransactionRef(),
+  const payment = await prisma.payment.create({
+    data: {
+      orderId: order.id,
+      userId,
+      method,
+      status: 'pending',
+      amount: order.total,
+      cardLast4,
+      cardBrand,
+      upiVpa,
+      bankCode,
+      walletProvider,
+      requiresOtp,
+      forcedFailure: simulateFailure,
+      transactionRef: generateTransactionRef(),
+    },
   });
 
-  if (method === 'cod') {
+  const resolveNow = async (): Promise<'success' | 'failed'> => {
     if (simulateFailure) {
-      payment.status = 'failed';
-      await payment.save();
-      await markOrderPaymentFailed(order);
-    } else {
-      payment.status = 'success';
-      await payment.save();
-      await finalizePaymentSuccess(order);
+      await prisma.payment.update({ where: { id: payment.id }, data: { status: 'failed' } });
+      await markOrderPaymentFailed(order.id);
+      return 'failed';
     }
-    return { paymentId: payment.id as string, requiresOtp: false, status: payment.status };
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: 'success' } });
+    await finalizePaymentSuccess(order);
+    return 'success';
+  };
+
+  if (method === 'cod') {
+    const status = await resolveNow();
+    return { paymentId: payment.id, requiresOtp: false, status };
   }
 
   if (method === 'upi') {
     await new Promise((resolve) => setTimeout(resolve, UPI_SIMULATED_DELAY_MS));
-    if (simulateFailure) {
-      payment.status = 'failed';
-      await payment.save();
-      await markOrderPaymentFailed(order);
-    } else {
-      payment.status = 'success';
-      await payment.save();
-      await finalizePaymentSuccess(order);
-    }
-    return { paymentId: payment.id as string, requiresOtp: false, status: payment.status };
+    const status = await resolveNow();
+    return { paymentId: payment.id, requiresOtp: false, status };
   }
 
   // card_credit / card_debit / netbanking / wallet require a simulated OTP step.
-  return { paymentId: payment.id as string, requiresOtp: true, status: payment.status };
+  return { paymentId: payment.id, requiresOtp: true, status: payment.status };
 }
 
 export async function verifyPayment(userId: string, input: VerifyPaymentInput) {
-  const payment = await Payment.findOne({ _id: input.paymentId, user: userId });
+  assertUuid(input.paymentId);
+  const payment = await prisma.payment.findFirst({ where: { id: input.paymentId, userId } });
   if (!payment) {
     throw new AppError('Payment not found', 404);
   }
 
-  const order = await Order.findById(payment.order);
+  const order = await prisma.order.findUnique({
+    where: { id: payment.orderId },
+    select: { id: true, userId: true, total: true, status: true, paymentStatus: true },
+  });
   if (!order) {
     throw new AppError('The order for this payment no longer exists', 404);
   }
 
+  const result = (paymentRow: Record<string, unknown>, o: { status: string; paymentStatus: string }, message: string) => ({
+    payment: serializePayment(paymentRow),
+    order: o,
+    message,
+  });
+
   if (payment.status === 'success') {
-    return { payment, order, message: 'Payment already verified' };
+    return result(payment, order, 'Payment already verified');
   }
   if (payment.status === 'failed') {
     throw new AppError('This payment has already failed. Please initiate a new payment.', 409);
   }
   if (!payment.requiresOtp) {
-    // upi/cod resolve at initiate time; nothing left to verify here.
-    return { payment, order, message: `Payment is ${payment.status}` };
+    return result(payment, order, `Payment is ${payment.status}`);
   }
 
   if (payment.forcedFailure) {
-    payment.status = 'failed';
-    payment.otpAttempts += 1;
-    await payment.save();
-    await markOrderPaymentFailed(order);
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: 'failed', otpAttempts: { increment: 1 } } });
+    await markOrderPaymentFailed(order.id);
     throw new AppError('Payment failed', 400);
   }
 
   if (input.otp === VALID_OTP) {
-    payment.status = 'success';
-    await payment.save();
+    const updated = await prisma.payment.update({ where: { id: payment.id }, data: { status: 'success' } });
     await finalizePaymentSuccess(order);
-    return { payment, order, message: 'Payment verified successfully' };
+    const fresh = await prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { status: true, paymentStatus: true } });
+    return result(updated, fresh, 'Payment verified successfully');
   }
 
-  payment.otpAttempts += 1;
-
-  if (payment.otpAttempts >= MAX_OTP_ATTEMPTS) {
-    payment.status = 'failed';
-    await payment.save();
-    await markOrderPaymentFailed(order);
+  const attempts = payment.otpAttempts + 1;
+  if (attempts >= MAX_OTP_ATTEMPTS) {
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: 'failed', otpAttempts: attempts } });
+    await markOrderPaymentFailed(order.id);
     throw new AppError('Incorrect OTP. Payment failed after maximum attempts.', 400);
   }
 
-  await payment.save();
-  throw new AppError(`Incorrect OTP. You have ${MAX_OTP_ATTEMPTS - payment.otpAttempts} attempt(s) remaining.`, 400);
+  await prisma.payment.update({ where: { id: payment.id }, data: { otpAttempts: attempts } });
+  throw new AppError(`Incorrect OTP. You have ${MAX_OTP_ATTEMPTS - attempts} attempt(s) remaining.`, 400);
 }
 
-export async function getPayment(userId: string, id: string, isAdmin = false): Promise<IPayment> {
-  const filter = isAdmin ? { _id: id } : { _id: id, user: userId };
-  const payment = await Payment.findOne(filter);
+export async function getPayment(userId: string, id: string, isAdmin = false) {
+  assertUuid(id);
+  const payment = await prisma.payment.findFirst({ where: isAdmin ? { id } : { id, userId } });
   if (!payment) {
     throw new AppError('Payment not found', 404);
   }
-  return payment;
+  return serializePayment(payment);
 }

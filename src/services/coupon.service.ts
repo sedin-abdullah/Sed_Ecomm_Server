@@ -1,5 +1,8 @@
-import { Coupon, ICoupon } from '../models/Coupon';
+import { prisma } from '../config/prisma';
+import type { Coupon } from '../generated/prisma/client';
 import { AppError } from '../utils/AppError';
+import { toApi } from '../utils/serialize';
+import { assertUuid } from '../utils/uuid';
 import { CreateCouponInput, UpdateCouponInput } from '../validators/coupon.validator';
 
 /**
@@ -13,10 +16,41 @@ function endOfDay(date: Date): Date {
   return d;
 }
 
+/**
+ * Normalised coupon with plain-number Decimal fields, shared with cart/order so
+ * their eligibility and discount math never touches a Prisma Decimal directly.
+ */
+export interface UsableCoupon {
+  code: string;
+  type: 'percentage' | 'flat';
+  value: number;
+  minOrderValue: number;
+  maxDiscount?: number;
+  expiresAt: Date;
+  usageLimit: number;
+  usedCount: number;
+  isActive: boolean;
+  minItems: number;
+}
+
+export function toUsableCoupon(c: Coupon): UsableCoupon {
+  return {
+    code: c.code,
+    type: c.type,
+    value: c.value.toNumber(),
+    minOrderValue: c.minOrderValue.toNumber(),
+    maxDiscount: c.maxDiscount?.toNumber(),
+    expiresAt: c.expiresAt,
+    usageLimit: c.usageLimit,
+    usedCount: c.usedCount,
+    isActive: c.isActive,
+    minItems: c.minItems,
+  };
+}
 
 export interface CouponPreview {
   code: string;
-  type: ICoupon['type'];
+  type: UsableCoupon['type'];
   value: number;
   minOrderValue: number;
   minItems: number;
@@ -28,10 +62,11 @@ export interface CouponPreview {
 }
 
 export async function validateCouponCode(code: string, amount?: number): Promise<CouponPreview> {
-  const coupon = await Coupon.findOne({ code: code.trim().toUpperCase() });
-  if (!coupon) {
+  const row = await prisma.coupon.findFirst({ where: { code: code.trim().toUpperCase() } });
+  if (!row) {
     throw new AppError('Coupon not found', 404);
   }
+  const coupon = toUsableCoupon(row);
 
   let reason: string | undefined;
   if (!coupon.isActive) reason = 'This coupon is no longer active';
@@ -53,7 +88,7 @@ export async function validateCouponCode(code: string, amount?: number): Promise
     type: coupon.type,
     value: coupon.value,
     minOrderValue: coupon.minOrderValue,
-    minItems: coupon.minItems ?? 0,
+    minItems: coupon.minItems,
     maxDiscount: coupon.maxDiscount,
     expiresAt: coupon.expiresAt,
     isValid: !reason,
@@ -62,47 +97,57 @@ export async function validateCouponCode(code: string, amount?: number): Promise
   };
 }
 
-export async function listCoupons(): Promise<ICoupon[]> {
-  return Coupon.find().sort({ createdAt: -1 });
+export async function listCoupons() {
+  const coupons = await prisma.coupon.findMany({ orderBy: { createdAt: 'desc' } });
+  return coupons.map((c) => toApi(c));
 }
 
-export async function createCoupon(input: CreateCouponInput): Promise<ICoupon> {
-  return Coupon.create({
-    code: input.code.toUpperCase(),
-    type: input.type,
-    value: input.value,
-    minOrderValue: input.minOrderValue,
-    maxDiscount: input.maxDiscount,
-    expiresAt: endOfDay(input.expiresAt),
-    usageLimit: input.usageLimit,
-    isActive: input.isActive,
-    minItems: input.minItems ?? 0,
+export async function createCoupon(input: CreateCouponInput) {
+  const coupon = await prisma.coupon.create({
+    data: {
+      code: input.code.toUpperCase(),
+      type: input.type,
+      value: input.value,
+      minOrderValue: input.minOrderValue,
+      maxDiscount: input.maxDiscount,
+      expiresAt: endOfDay(input.expiresAt),
+      usageLimit: input.usageLimit,
+      isActive: input.isActive,
+      minItems: input.minItems ?? 0,
+    },
   });
+  return toApi(coupon);
 }
 
-export async function updateCoupon(id: string, input: UpdateCouponInput): Promise<ICoupon> {
-  const coupon = await Coupon.findById(id);
-  if (!coupon) {
+export async function updateCoupon(id: string, input: UpdateCouponInput) {
+  assertUuid(id);
+  const existing = await prisma.coupon.findUnique({ where: { id }, select: { id: true } });
+  if (!existing) {
     throw new AppError('Coupon not found', 404);
   }
 
-  if (input.code !== undefined) coupon.code = input.code.toUpperCase();
-  if (input.type !== undefined) coupon.type = input.type;
-  if (input.value !== undefined) coupon.value = input.value;
-  if (input.minOrderValue !== undefined) coupon.minOrderValue = input.minOrderValue;
-  if (input.maxDiscount !== undefined) coupon.maxDiscount = input.maxDiscount;
-  if (input.expiresAt !== undefined) coupon.expiresAt = endOfDay(input.expiresAt);
-  if (input.usageLimit !== undefined) coupon.usageLimit = input.usageLimit;
-  if (input.isActive !== undefined) coupon.isActive = input.isActive;
-  if (input.minItems !== undefined) coupon.minItems = input.minItems;
-
-  await coupon.save();
-  return coupon;
+  const coupon = await prisma.coupon.update({
+    where: { id },
+    data: {
+      ...(input.code !== undefined ? { code: input.code.toUpperCase() } : {}),
+      ...(input.type !== undefined ? { type: input.type } : {}),
+      ...(input.value !== undefined ? { value: input.value } : {}),
+      ...(input.minOrderValue !== undefined ? { minOrderValue: input.minOrderValue } : {}),
+      ...(input.maxDiscount !== undefined ? { maxDiscount: input.maxDiscount } : {}),
+      ...(input.expiresAt !== undefined ? { expiresAt: endOfDay(input.expiresAt) } : {}),
+      ...(input.usageLimit !== undefined ? { usageLimit: input.usageLimit } : {}),
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+      ...(input.minItems !== undefined ? { minItems: input.minItems } : {}),
+    },
+  });
+  return toApi(coupon);
 }
 
 export async function deleteCoupon(id: string): Promise<void> {
-  const coupon = await Coupon.findByIdAndDelete(id);
-  if (!coupon) {
+  assertUuid(id);
+  const existing = await prisma.coupon.findUnique({ where: { id }, select: { id: true } });
+  if (!existing) {
     throw new AppError('Coupon not found', 404);
   }
+  await prisma.coupon.delete({ where: { id } });
 }

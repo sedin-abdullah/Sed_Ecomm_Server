@@ -30,3 +30,42 @@ services:
       # resolve to absolute URLs (e.g. https://sed-ecomm-server.onrender.com).
       - key: PUBLIC_URL
         sync: false
+
+  # --- STAGING service: the PostgreSQL/Prisma backend (postgres-migration branch) ---
+  # Separate service, pinned to the migration branch and connected to Neon. Exists
+  # so automated tests (e.g. Sedstart) can drive a web client that writes to Neon and
+  # then validate rows there. Does NOT touch the production service above (Mongo).
+  # Fill the sync:false secrets in the Render dashboard.
+  - type: web
+    name: sed-ecomm-server-staging
+    runtime: node
+    plan: free
+    branch: postgres-migration
+    # postinstall runs `prisma generate` (the generated client is git-ignored),
+    # so the build has the typed client before `tsc` runs.
+    buildCommand: npm install --include=dev && npx prisma generate && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Neon Postgres — pooled URL for the app, direct URL for migrations.
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_ACCESS_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      # The staging client's origin (its Vercel/preview URL) — for CORS.
+      - key: CLIENT_URL
+        sync: false
+      # This staging service's own URL, e.g. https://sed-ecomm-server-staging.onrender.com
+      - key: PUBLIC_URL
+        sync: false
+      # NOTE: no MONGODB_URI — this branch no longer requires it.

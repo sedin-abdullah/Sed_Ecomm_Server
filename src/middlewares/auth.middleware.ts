@@ -1,8 +1,10 @@
 import { NextFunction, Request, Response } from 'express';
-import { User, UserRole } from '../models/User';
+import { prisma } from '../config/prisma';
+import type { UserRole } from '../generated/prisma/client';
 import { verifyAccessToken } from '../services/token.service';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
+import { toApi } from '../utils/serialize';
 
 /**
  * Verifies the `Authorization: Bearer <accessToken>` header, loads the
@@ -25,7 +27,7 @@ export const protect = asyncHandler(async (req: Request, _res: Response, next: N
     throw new AppError('Invalid or expired access token', 401);
   }
 
-  const user = await User.findById(payload.sub);
+  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
   if (!user) {
     throw new AppError('The user belonging to this token no longer exists', 401);
   }
@@ -33,7 +35,7 @@ export const protect = asyncHandler(async (req: Request, _res: Response, next: N
     throw new AppError('Your account has been disabled. Please contact support.', 403);
   }
 
-  req.user = user;
+  req.user = toApi(user) as Express.Request['user'];
   next();
 });
 

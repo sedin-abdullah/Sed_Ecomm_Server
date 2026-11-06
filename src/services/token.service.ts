@@ -1,6 +1,6 @@
 import jwt, { Secret, SignOptions } from 'jsonwebtoken';
 import { env } from '../config/env';
-import { UserRole } from '../models/User';
+import type { UserRole } from '../generated/prisma/client';
 
 export interface AccessTokenPayload {
   sub: string;

@@ -1,6 +1,7 @@
 import { CookieOptions, Request, Response } from 'express';
 import { env, isProduction } from '../config/env';
-import { IUser, User } from '../models/User';
+import { prisma } from '../config/prisma';
+import type { PublicUser } from '../types/user';
 import * as authService from '../services/auth.service';
 import { signAccessToken, verifyRefreshToken } from '../services/token.service';
 import { AppError } from '../utils/AppError';
@@ -26,9 +27,10 @@ function refreshCookieOptions(): CookieOptions {
   };
 }
 
-function serializeUser(user: IUser) {
+function serializeUser(user: PublicUser) {
   return {
-    id: user.id as string,
+    id: user.id,
+    _id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
@@ -78,16 +80,16 @@ export const refreshToken = asyncHandler(async (req: Request, res: Response) => 
     throw new AppError('Invalid or expired refresh token. Please log in again.', 401);
   }
 
-  const user = await User.findById(payload.sub);
+  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
   if (!user) {
     throw new AppError('The user belonging to this token no longer exists', 401);
   }
 
-  const accessToken = signAccessToken(user.id as string, user.role);
+  const accessToken = signAccessToken(user.id, user.role);
   // Return the user too so the client can resync its persisted user with the
   // identity the refresh cookie actually belongs to (prevents a stale
   // admin/customer mismatch between the displayed user and the token).
-  sendResponse(res, 200, { data: { accessToken, user: serializeUser(user) } });
+  sendResponse(res, 200, { data: { accessToken, user: serializeUser(user as PublicUser) } });
 });
 
 export const forgotPassword = asyncHandler(

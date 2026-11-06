@@ -1,20 +1,19 @@
-import mongoose from 'mongoose';
-import { env } from './env';
+import { prisma } from './prisma';
 
-mongoose.set('strictQuery', true);
-
+/**
+ * Opens the PostgreSQL connection (via Prisma) and verifies it with a trivial
+ * query before the server starts accepting traffic. Mirrors the previous
+ * Mongoose `connectDB`: fail fast and exit(1) if the database is unreachable.
+ */
 export async function connectDB(): Promise<void> {
   try {
-    await mongoose.connect(env.MONGODB_URI);
-    console.log(`[db] MongoDB connected: ${mongoose.connection.host}/${mongoose.connection.name}`);
+    await prisma.$connect();
+    await prisma.$queryRaw`SELECT 1`;
+    console.log('[db] PostgreSQL connected via Prisma');
   } catch (error) {
-    console.error('[db] MongoDB connection failed:', error instanceof Error ? error.message : error);
+    console.error('[db] PostgreSQL connection failed:', error instanceof Error ? error.message : error);
     process.exit(1);
   }
 }
-
-mongoose.connection.on('disconnected', () => {
-  console.warn('[db] MongoDB disconnected');
-});
 
 export default connectDB;

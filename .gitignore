@@ -9,3 +9,7 @@ coverage/
 
 # Runtime user uploads (don't commit generated content)
 uploads/
+
+/src/generated/prisma
+src/generated
+scripts/id-map.json

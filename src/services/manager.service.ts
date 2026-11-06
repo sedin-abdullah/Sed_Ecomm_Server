@@ -1,6 +1,10 @@
 import crypto from 'crypto';
-import { User, UserRole } from '../models/User';
+import { prisma } from '../config/prisma';
+import type { UserRole } from '../generated/prisma/client';
 import { AppError } from '../utils/AppError';
+import { toApi } from '../utils/serialize';
+import { assertUuid } from '../utils/uuid';
+import { hashPassword } from './user.service';
 
 type StaffRole = 'admin' | 'manager'; // admin = Store Owner (UI label)
 
@@ -31,38 +35,48 @@ export async function createStaff(
   const { prefix, label } = ROLE_META[role];
   let email = '';
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    email = `${prefix}_${randomSuffix()}@sedecomm.com`;
+    const candidate = `${prefix}_${randomSuffix()}@sedecomm.com`;
     // eslint-disable-next-line no-await-in-loop
-    if (!(await User.exists({ email }))) break;
-    email = '';
+    const taken = await prisma.user.findUnique({ where: { email: candidate }, select: { id: true } });
+    if (!taken) {
+      email = candidate;
+      break;
+    }
   }
   if (!email) throw new AppError('Could not generate a unique login, please retry', 500);
 
   const password = generatePassword();
   const displayName = name?.trim() || `${label} ${email.split('_')[1]?.slice(0, 6) ?? ''}`.trim();
 
-  const user = await User.create({
-    name: displayName,
-    email,
-    password, // hashed by the User pre-save hook
-    role,
-    isEmailVerified: true,
-    isActive: true,
+  const user = await prisma.user.create({
+    data: {
+      name: displayName,
+      email,
+      password: await hashPassword(password),
+      role,
+      isEmailVerified: true,
+      isActive: true,
+    },
   });
 
-  return { id: String(user._id), name: user.name, email: user.email, password, role: user.role };
+  return { id: user.id, name: user.name, email: user.email, password, role: user.role };
 }
 
 /** List all accounts of a given staff role (newest first). */
 export async function listStaff(role: StaffRole) {
-  return User.find({ role }).select('name email isActive createdAt').sort({ createdAt: -1 });
+  const users = await prisma.user.findMany({
+    where: { role },
+    select: { id: true, name: true, email: true, isActive: true, createdAt: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  return users.map((u) => toApi(u));
 }
 
 /** Enable/disable a staff account. Disabled accounts are blocked at `protect`. */
 export async function setStaffStatus(role: StaffRole, id: string, isActive: boolean) {
-  const user = await User.findById(id);
+  assertUuid(id);
+  const user = await prisma.user.findUnique({ where: { id }, select: { id: true, role: true } });
   if (!user || user.role !== role) throw new AppError('Account not found', 404);
-  user.isActive = isActive;
-  await user.save();
-  return user;
+  const updated = await prisma.user.update({ where: { id }, data: { isActive } });
+  return toApi(updated);
 }
